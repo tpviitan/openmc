@@ -58,6 +58,7 @@ module constants
 
   real(8), parameter ::            &
        PI           = 3.1415926535898_8, & ! pi
+       SQRTPI       = 1.772453850905516, & ! square root of pi
        MASS_NEUTRON = 1.008664916,       & ! mass of a neutron in amu
        MASS_PROTON  = 1.007276466812,    & ! mass of a proton in amu
        AMU          = 1.660538921e-27,   & ! 1 amu in kg
