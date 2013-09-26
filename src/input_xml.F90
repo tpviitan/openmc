@@ -1284,6 +1284,12 @@ contains
         call fatal_error()
       end if
 
+      if (run_mode == MODE_PLOTTING) then
+         ! add to the dictionary and skip xs processing
+         call material_dict % add_key(mat % id, i)
+         cycle
+      end if
+
       ! Read tmstemp if available 
       if (check_for_node(node_mat, "tmstemp")) then
         call get_node_value(node_mat, "tmstemp", tms)
@@ -1297,12 +1303,6 @@ contains
                 to_str(mat % id) 
            call fatal_error()
         end if
-      end if
-
-      if (run_mode == MODE_PLOTTING) then
-        ! add to the dictionary and skip xs processing
-        call material_dict % add_key(mat % id, i)
-        cycle
       end if
 
       ! =======================================================================
