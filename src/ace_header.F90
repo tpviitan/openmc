@@ -326,6 +326,10 @@ module ace_header
       if (allocated(this % energy)) &
            deallocate(this % total, this % elastic, this % fission,  &
           this % nu_fission, this % absorption)
+
+      if (allocated(this % tms_majorant)) &
+           deallocate(this % tms_majorant)
+
       if (allocated(this % heating)) &
            deallocate(this % heating)
       

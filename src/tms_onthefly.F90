@@ -9,12 +9,7 @@ module tms_onthefly
   use string, only: to_str
   use output, only: write_message
 
-      ! Global variables here?
-#ifdef MPI
-      use mpi
-#endif
-
-      implicit none
+  implicit none
 
 contains 
 
@@ -29,14 +24,14 @@ contains
     n = set_maximum_temperatures() 
     
     if( n == 0 ) then
-       ! if there are no TMS materials in the system, init nothing
+       ! if there are no TMS materials in the problem, init nothing
        return
     end if
 
 ! Print message (this is unimportant and can be removed )
     
     message="Initializing TMS for all nuclides in " // trim(to_str(n)) &
-         // " materials." 
+         // " materials..." 
     call write_message()
 
     call calculate_tms_majorants()
@@ -76,10 +71,10 @@ contains
              ! If material temperature is larger than max T of nuclide,
              ! update max_kT
              
-             if ( nuclides(i) % max_kT < mat % tmstemp ) then
-                nuclides(i) % max_kT = mat % tmstemp
+             if ( nuclides(nuclide_i) % max_kT < mat % tmstemp ) then
+                nuclides(nuclide_i) % max_kT = mat % tmstemp
              end if
-             
+                          
           end do                    
        end if
     end do       
@@ -93,13 +88,169 @@ contains
 !===============================================================================
 
   subroutine calculate_tms_majorants()
+
+    class(Nuclide), pointer   :: nuc ! pointer to nuclide     
+    integer :: u           ! loop index for nuclides 
+    integer :: i, ii       ! loop indices over energy grid 
+    integer :: ilow, ihigh ! indices used for searching e
+    real(8) :: dT       ! delta-T, temperature diff between xs and majorant
+    real(8) :: dkT      ! delta-kT, temperature diff between xs and majorant in MeV
+    real(8) :: e        ! energy 
+    real(8) :: ar       ! awr / dkT 
+    real(8) :: df       ! factor used in determining of DBRC-style majorant 
+                        ! energy boundaries
+    real(8) :: emin, emax ! energy boundaries for majorant
+    real(8) :: max_xs   ! maximum value of cross section 
+    real(8) :: f        ! factor for cross section interpolation 
+
     
+! loop over all nuclides and calculate majorant for nuclides with 
+! max_kT >= 0 (nuclides to be used with TMS)
+
+    do u = 1, n_nuclides_total
+
+       nuc => nuclides(u)
+       
+       if ( nuc % max_kT >= 0.0 ) then
+          
+          ! Calculate dT & ar
+          dkT= nuc % max_kT - nuc % kT
+          dT = (nuc % max_kT - nuc % kT) / K_BOLTZMANN    
+          ar = nuc % awr / dkT;
+          
+          ! Write message 
+          message = "Generating TMS majorant for nuclide " // & 
+               trim(nuc % name) // ". Delta-T = " // trim( to_str(dT) ) &
+               // " K."   
+          call write_message()
+          
+          ! Allocate memory for majorant cross section 
+          
+          allocate(nuc % tms_majorant(nuc % n_grid))
+
+          ! initial guesses for the lower and upper boundary
+
+          ilow = 1
+          ihigh = 1
+
+          ! loop over energy grid
+
+          do i=1, nuc % n_grid
+             
+             ! Current energy grid point
+
+             e = nuc % energy(i);
+
+             !===========================================!
+             ! Determine energy limits corresponding to e!
+             !===========================================!
+
+             df = 4.0/sqrt(ar*e);
+             
+             ! If the neutron energy is small enough compared to the energy of 
+             ! the target, the relative collision energ can be arbitrarily small
+             ! --> Let's approximate 0.0 eV with the lowest grid point
+             if ( e < 16.0 / ar) then
+                emin = nuc % energy(1)            
+             else
+                ! otherwise, calculate the minimum boundary energy normally
+                ! min energy corresponds to a parallel collision with mu = 1
+                emin = e*(1 - df)*(1 - df)
+             end if
+              
+             ! Calculate maximum energy 
+             ! max energy corresponds to a head-on collision with mu = -1
+             
+             emax = e*(1 + df)*(1 + df);
+
+             ! A few sanity checks
+             
+             ! This should never happen
+             if ( emin < nuc % energy(1) ) then
+                emin = nuc % energy(1)
+             end if
+
+             ! This happens.
+             if ( emax > nuc % energy(nuc % n_grid) ) then
+                emax = nuc % energy(nuc  % n_grid)
+             end if
+
+             !====================================================!
+             ! Find max total xs between the limits emin and emax !
+             !====================================================!
+             
+             ! First find energy grid indices for the lowest and 
+             ! highest point that are within the boundaries
+
+             ! As the boundaries are changing monotonously, the boundaries
+             ! of the previous point act as a good first guess 
+
+             do while ( nuc % energy(ilow) < emin )
+                ilow = ilow + 1                
+             end do
+             
+             if (ihigh < ilow) then
+                ihigh = ilow
+             end if
+             
+             do while ( nuc % energy(ihigh + 1) < emax )
+                ihigh = ihigh + 1                
+             end do
+
+             ! look for maximum between ilow and ihigh
+             
+             max_xs = nuc % total(ilow);
+            
+             do ii = ilow + 1, ihigh 
+                
+                if ( nuc % total(ii) > max_xs ) then
+                   max_xs = nuc % total(ii)
+                end if
+                
+             end do
+
+             ! interpolate extremes and check 
+
+             ! low:
+
+             f = (emin - nuc % energy(ilow-1))/( nuc % energy(ilow) - nuc % energy(ilow-1))
+             if ( nuc % total(ilow-1) + f * (nuc % total(ilow) - nuc % total(ilow-1)) &
+                  > max_xs ) then
+
+                max_xs = nuc % total(ilow-1) + f * (nuc % total(ilow) - nuc % total(ilow-1))
+
+             end if
+             
+             ! high:
+             f = (emax - nuc % energy(ihigh))/( nuc % energy(ihigh + 1) &
+                  - nuc % energy(ihigh))
+             if ( nuc % total(ihigh) + f * (nuc % total(ihigh+1) - nuc % total(ihigh)) &
+                  > max_xs ) then
+
+                max_xs = nuc % total(ihigh) + f * (nuc % total(ihigh+1) - &
+                     nuc % total(ihigh))
+
+             end if
+             
+             ! Store maximum cross section as majorant
+             
+             nuc % tms_majorant(i) = max_xs
+ 
+            
+             
+!             if (nuc % zaid == 92238 .and. e > 6.0e-6 .and. e < 7.5e-6 ) then
+!                message = " " // trim(to_str(e)) // " " // trim(to_str(nuc % tms_majorant(i))) // " " &
+!                     // trim(to_str(nuc % total(i))) 
+!                call write_message()
+!             end if
+
+          end do
+
+       end if
+
+    end do
     
-
-
-
-
-  end subroutine calculate_tms_majorants
+    end subroutine calculate_tms_majorants
 
 !===============================================================================
 ! CDINTEGRAL calculates the Doppler-broadening integral for constant cross 
