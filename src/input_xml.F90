@@ -1208,6 +1208,7 @@ contains
     integer :: index_sab     ! index in sab_tables
     real(8) :: val           ! value entered for density
     real(8) :: temp_dble     ! temporary double prec. real
+    real(8) :: tms           ! TMS temperature (in K)
     logical :: file_exists   ! does materials.xml exist?
     logical :: sum_density   ! density is taken to be sum of nuclide densities
     character(12) :: name    ! name of isotope, e.g. 92235.03c
@@ -1283,6 +1284,21 @@ contains
         call fatal_error()
       end if
 
+      ! Read tmstemp if available 
+      if (check_for_node(node_mat, "tmstemp")) then
+        call get_node_value(node_mat, "tmstemp", tms)
+        
+        ! Sanity check & store 
+        if ( tms >= 0.0 ) then 
+           mat % tmstemp = tms*K_BOLTZMANN     ! temperature in MeV
+        else
+           message = "Negative temperature (tmstemp = " // & 
+                trim(to_str(tms)) // " K) given for material " // & 
+                to_str(mat % id) 
+           call fatal_error()
+        end if
+      end if
+
       if (run_mode == MODE_PLOTTING) then
         ! add to the dictionary and skip xs processing
         call material_dict % add_key(mat % id, i)
@@ -1343,7 +1359,7 @@ contains
           call fatal_error()
         end select
       end if
-
+     
       ! =======================================================================
       ! READ AND PARSE <nuclide> TAGS
 

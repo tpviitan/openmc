@@ -2,6 +2,8 @@ element materials {
   element material {
     (element id { xsd:int } | attribute id { xsd:int }) &
 
+    (element tmstemp { xsd:double } | attribute { xsd:double+ })? &
+
     element density {
       (element value { xsd:double } | attribute value { xsd:double })? &
       (element units { xsd:string { maxLength = "10" } } |

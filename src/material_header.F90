@@ -21,6 +21,11 @@ module material_header
     ! Temporary names read during initialization
     character(12), allocatable :: names(:)     ! isotope names
     character(12), allocatable :: sab_names(:) ! name of S(a,b) table
+
+    ! Material temperature for TMS on-the-fly treatment
+    
+    real(8)       :: tmstemp = -1 ! TMS temperature in MeV, negative for no TMS 
+
   end type Material
 
 end module material_header
