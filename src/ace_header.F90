@@ -101,6 +101,7 @@ module ace_header
     real(8), allocatable :: energy(:)     ! energy values corresponding to xs
 
     ! Microscopic cross sections
+    ! NOTE: with TMS these are at kT temperature 
     real(8), allocatable :: total(:)      ! total cross section
     real(8), allocatable :: elastic(:)    ! elastic scattering
     real(8), allocatable :: fission(:)    ! fission
@@ -137,6 +138,10 @@ module ace_header
     ! Reactions
     integer :: n_reaction ! # of reactions
     type(Reaction), pointer :: reactions(:) => null()
+
+    ! Additional data for TMS on-the-fly temperature treatment
+    real(8)              :: max_kT = -1.0  ! Maximum temperature of nuclide in MeV
+    real(8), allocatable :: tms_majorant(:)    ! microscopic majorant
     
     ! Type-Bound procedures
     contains

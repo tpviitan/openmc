@@ -21,6 +21,7 @@ module initialize
   use string,           only: to_str, str_to_int, starts_with, ends_with
   use tally_header,     only: TallyObject, TallyResult
   use tally_initialize, only: configure_tallies
+  use tms_onthefly
 
 #ifdef MPI
   use mpi
@@ -110,6 +111,9 @@ contains
         call unionized_grid()
         call time_unionize % stop()
       end if
+
+      ! Initialize data for TMS transport (calculate TMS majorants etc)
+      call init_tms()
 
       ! Allocate and setup tally stride, matching_bins, and tally maps
       call configure_tallies()
