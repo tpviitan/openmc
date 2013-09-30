@@ -217,6 +217,10 @@ module ace_header
     real(8) :: fission         ! microscopic fission xs
     real(8) :: nu_fission      ! microscopic production xs
     real(8) :: kappa_fission   ! microscopic energy-released from fission
+    
+    ! For TMS
+    real(8) :: tms_majorant    ! microscopic TMS majorant at the current E
+    
 
     ! Information for S(a,b) use
     integer :: index_sab   ! index in sab_tables (zero means no table)
@@ -238,6 +242,7 @@ module ace_header
     real(8) :: fission       ! macroscopic fission xs
     real(8) :: nu_fission    ! macroscopic production xs
     real(8) :: kappa_fission ! macroscopic energy-released from fission
+    real(8) :: tms_majorant  ! macroscopic TMS majorant cross section 
   end type MaterialMacroXS
 
   contains

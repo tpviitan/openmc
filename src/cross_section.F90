@@ -9,6 +9,7 @@ module cross_section
   use particle_header, only: Particle
   use random_lcg,      only: prn
   use search,          only: binary_search
+  use tms_onthefly,      only: tms_calculate_nuclide_xs
 
   implicit none
   save
@@ -43,6 +44,7 @@ contains
     material_xs % fission    = ZERO
     material_xs % nu_fission = ZERO
     material_xs % kappa_fission  = ZERO
+    material_xs % tms_majorant = ZERO
 
     ! Exit subroutine if material is void
     if (p % material == MATERIAL_VOID) return
@@ -92,7 +94,11 @@ contains
 
       ! Calculate microscopic cross section for this nuclide
       if (p % E /= micro_xs(i_nuclide) % last_E) then
-        call calculate_nuclide_xs(i_nuclide, i_sab, p % E)
+         if( mat % tmstemp < 0.0) then
+            call calculate_nuclide_xs(i_nuclide, i_sab, p % E)
+         else
+            call tms_calculate_nuclide_xs(i_nuclide, mat % tmstemp, p % E)
+         end if
       end if
 
       ! ========================================================================
@@ -124,6 +130,7 @@ contains
       ! Add contributions to material macroscopic energy release from fission
       material_xs % kappa_fission = material_xs % kappa_fission + &
            atom_density * micro_xs(i_nuclide) % kappa_fission
+            
     end do
 
   end subroutine calculate_xs
@@ -480,5 +487,6 @@ contains
     end if
 
   end subroutine find_energy_index
+
 
 end module cross_section

@@ -13,6 +13,8 @@ module tracking
   use string,          only: to_str
   use tally,           only: score_analog_tally, score_tracklength_tally, &
                              score_surface_current
+  
+  use tms_onthefly
 
 contains
 
@@ -23,16 +25,24 @@ contains
   subroutine transport(p)
 
     type(Particle), intent(inout) :: p
-
+    
     integer :: surface_crossed ! surface which particle is on
     integer :: lattice_crossed ! lattice boundary which particle crossed
     integer :: last_cell       ! most recent cell particle was in
     integer :: n_event         ! number of collisions/crossings
+    integer :: i               ! loop variable over nuclides
+    integer :: i_nuclide       ! nuclide index 
     real(8) :: d_boundary      ! distance to nearest boundary
     real(8) :: d_collision     ! sampled distance to collision
     real(8) :: distance        ! distance particle travels
+    real(8) :: xs_micro        ! microscopic xs in target-at-rest frame
+    real(8) :: Er              ! target-at-rest energy of a TMS collision 
+    real(8) :: adens           ! atomic density
     logical :: found_cell      ! found cell which particle is in?
     type(LocalCoord), pointer, save :: coord => null()
+    type(Material), pointer :: mat ! material pointer
+    type(Nuclide), pointer :: nuc ! nuclide pointer 
+        
 !$omp threadprivate(coord)
 
     ! Display message if high verbosity or trace is on
@@ -70,21 +80,73 @@ contains
     do while (p % alive)
 
       if (check_overlaps) call check_cell_overlap(p)
-
-      ! Calculate microscopic and macroscopic cross sections -- note: if the
-      ! material is the same as the last material and the energy of the
-      ! particle hasn't changed, we don't need to lookup cross sections again.
-
-      if (p % material /= p % last_material) call calculate_xs(p)
-
+      
       ! Find the distance to the nearest boundary
       call distance_to_boundary(p, d_boundary, surface_crossed, lattice_crossed)
 
-      ! Sample a distance to collision
-      if (material_xs % total == ZERO) then
-        d_collision = INFINITY
+      mat => materials(p % material)
+
+
+      if (mat % tmstemp < 0) then
+         !=====================================================================
+         ! If TMS is not used for current material, use conventional transport
+         !=====================================================================
+
+         ! Calculate microscopic and macroscopic cross sections -- note: if the
+         ! material is the same as the last material and the energy of the
+         ! particle hasn't changed, we don't need to lookup cross sections again.
+
+         if (p % material /= p % last_material) call calculate_xs(p)
+         
+         ! Sample a distance to collision
+        if (material_xs % total == ZERO) then
+            d_collision = INFINITY
+         else
+            d_collision = -log(prn()) / material_xs % total
+         end if
+         
       else
-        d_collision = -log(prn()) / material_xs % total
+         !=====================================================================
+         ! If TMS is used, use sort of delta-tracking approach (not to be 
+         ! confused with Woodcock delta-tracking, which is geometry-related)
+         !=====================================================================
+         
+         ! toi material pitää asettaa tai tää tarkistus ei skulaa 
+         ! tarkistus energialle ? 
+
+         ! Calculate majorant cross sections for material and E 
+         ! (these are constant, i.e. not sampled) 
+
+         if (p % material /= p % last_material) call tms_update_majorants(p)
+            
+         ! Sample all (other) microscopic and macroscopic cross sections
+         call calculate_xs(p)
+     
+         d_collision = 0.0;
+
+         ! advance neutron in small steps until a collision occurs
+         ! or the neutron hits a boundary
+         do 
+                        
+            ! Sample next collision point candidate 
+            d_collision = d_collision - log(prn()) / material_xs % tms_majorant
+
+            ! if the neutron went beyond the boundary, exit loop 
+            if( d_collision > d_boundary) exit
+
+            ! Sample target nuclide candidate based on majorants 
+            ! returns index of the sampled nuclide
+            i_nuclide = tms_sample_nuclide(p)
+            
+            ! Resample target velocity (ekalla kertaa vois kierrattaa)
+            call tms_calculate_nuclide_xs(i_nuclide, mat % tmstemp, p % E)
+            
+            ! Rejection sampling 
+            ! in case of an accepted collision, proceed 
+            if( prn() > micro_xs(i_nuclide) % total / & 
+                 micro_xs(i_nuclide) % tms_majorant )  exit
+         end do
+         
       end if
 
       ! Select smaller of the two distances
@@ -97,9 +159,9 @@ contains
         coord => coord % next
       end do
 
-      ! Score track-length tallies
-      if (active_tracklength_tallies % size() > 0) &
-           call score_tracklength_tally(p, distance)
+      ! Score track-length tallies      
+!      if (active_tracklength_tallies % size() > 0) &
+!           call score_tracklength_tally(p, distance)
 
       ! Score track-length estimate of k-eff
 !$omp critical
@@ -145,6 +207,7 @@ contains
         ! Clear surface component
         p % surface = NONE
 
+        ! Tälle pitää tehdä tms-vastine tahi sisällyttää se tuohon
         call collision(p)
 
         ! Score collision estimator tallies -- this is done after a collision

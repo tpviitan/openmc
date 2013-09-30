@@ -8,6 +8,8 @@ module tms_onthefly
   use global
   use string, only: to_str
   use output, only: write_message
+  use particle_header, only: Particle
+  use ace_header 
 
   implicit none
 
@@ -81,7 +83,6 @@ contains
     
   end function set_maximum_temperatures
 
-
 !===============================================================================
 ! CALCULATE_TMS_MAJORANTS generates the microscopic majorant cross sections 
 ! for each nuclide. ("temperature majorant of total cross section")
@@ -136,7 +137,7 @@ contains
           ! loop over energy grid
 
           do i=1, nuc % n_grid
-             
+            
              ! Current energy grid point
 
              e = nuc % energy(i);
@@ -144,6 +145,9 @@ contains
              !===========================================!
              ! Determine energy limits corresponding to e!
              !===========================================!
+
+             ! This is done the old "DBRC" way (Becker, Dagan, Rothenstein)
+             ! More efficient ways exist but remain to be published
 
              df = 4.0/sqrt(ar*e);
              
@@ -232,18 +236,10 @@ contains
 
              end if
              
-             ! Store maximum cross section as majorant
+             ! Multiply by D-b integral for constant cross section and store 
              
-             nuc % tms_majorant(i) = max_xs
- 
-            
-             
-!             if (nuc % zaid == 92238 .and. e > 6.0e-6 .and. e < 7.5e-6 ) then
-!                message = " " // trim(to_str(e)) // " " // trim(to_str(nuc % tms_majorant(i))) // " " &
-!                     // trim(to_str(nuc % total(i))) 
-!                call write_message()
-!             end if
-
+             nuc % tms_majorant(i) = max_xs * cdintegral(e, dkT, nuc % awr)
+                          
           end do
 
        end if
@@ -258,14 +254,14 @@ contains
 !===============================================================================
 
 
-      function cdintegral(e,dt,awr) result(cdint) 
-        real(8), intent(in)      :: e    ! Neutron energy (always L-frame)
-        real(8), intent(in)      :: dt   ! Delta T
+      function cdintegral(E,dkT,awr) result(cdint) 
+        real(8), intent(in)      :: E    ! Neutron energy (always L-frame)
+        real(8), intent(in)      :: dkT  ! Delta kT (MeV)
         real(8), intent(in)      :: awr  ! Atomic Weight Ratio (AWR)
         
         real(8) :: a, ainv, cdint;
         
-        a = sqrt(awr*e/(dt*K_BOLTZMANN));
+        a = sqrt(awr*e/(dkT));
         ainv = 1/a;
 
 ! This can be easily optimized, since the value is practically 1.0
@@ -274,8 +270,333 @@ contains
         cdint=(1.0 + 0.5*ainv*ainv)*erf(a) + exp(-a**2)*ainv/SQRTPI;
       
       end function cdintegral
+          
+!===============================================================================
+! TMS_SAMPLE_NUCLIDE samples the target nuclide candidate and stores in nuc 
+!===============================================================================
+  
+      function tms_sample_nuclide(p) result(i_nuclide)
 
-      
-      
+        type(Particle), intent(in) :: p ! particle pointer 
 
-end module tms_onthefly
+        type(Nuclide), pointer :: nuc ! nuclide pointer 
+        type(Material), pointer :: mat ! material pointer 
+        integer :: i       ! loop variable over nuclides in material
+        integer :: i_grid  ! energy grid index
+        integer :: i_nuclide  ! nuclide index
+        real(8) :: xs_nuc  ! aux varaible used in TMS nuclide sampling
+        real(8) :: E       ! energy
+        real(8) :: xs_maj_nuc ! nuclide-wise microscopic majorant
+
+        ! set energy and material pointer 
+        E = p % E        
+        mat => materials(p % material)
+
+        ! Sample proportion of macroscopic xs
+
+        xs_nuc = material_xs % tms_majorant * prn()                                  
+        
+        ! init index
+        i = 1
+
+        ! arranging the nuclide array properly (most probable nuclide
+        ! first) would increase significantly the performance in 
+        ! case of burned materials 
+
+        do i = 1, mat % n_nuclides
+           
+           nuc => nuclides(i_nuclide)
+        
+           xs_nuc = xs_nuc - mat % atom_density(i) * &
+                max( nuc % tms_majorant(i_grid), nuc % tms_majorant(i_grid+1) )
+                           
+           if(xs_nuc < 0.0) exit
+
+        end do
+
+        if( xs_nuc > 0.0 ) then
+           message = "TMS nuclide sampling failed" 
+           call fatal_error()
+        end if
+                
+        i_nuclide = mat % nuclide(i) 
+
+      end function tms_sample_nuclide
+
+    
+   !======================================================================
+
+   !======================================================================
+
+   subroutine tms_update_majorants(p)   
+     
+     type(Particle), intent(inout) :: p ! Particle pointer 
+     real(8) :: atom_density 
+     integer :: i_nuclide
+     integer :: i_grid
+     integer :: i ! loop variable over nuclides 
+
+     type(Material), pointer :: mat 
+     type(Nuclide), pointer :: nuc 
+     
+     material_xs % tms_majorant = ZERO
+     
+     mat => materials(p % material)
+     
+     ! Find energy index on unionized grid          
+     if (grid_method == GRID_UNION) call find_energy_index(p % E)
+     
+     do i = 1, mat % n_nuclides
+        
+        atom_density = mat % atom_density(i)
+        i_nuclide = mat % nuclide(i) 
+        nuc => nuclides(i_nuclide)
+        
+        ! Get i_grid
+        
+        select case(grid_method)
+        case(GRID_UNION)
+           i_grid = nuc % grid_index(union_grid_index)          
+           
+        case(GRID_NUCLIDE)
+           
+           ! If we're not using the unionized grid, we have to do a binary search on
+           ! the nuclide energy grid in order to determine which points to
+           ! interpolate between
+           
+           if (p % E < nuc % energy(1)) then
+              i_grid = 1
+           elseif (p % E > nuc % energy(nuc % n_grid)) then
+              i_grid = nuc % n_grid - 1
+           else
+              i_grid = binary_search(nuc % energy, nuc % n_grid, p % E)
+           end if
+           
+        end select
+        
+        micro_xs(i_nuclide) % tms_majorant = &
+             max(nuc % tms_majorant(i_grid), nuc % tms_majorant(i_grid + 1))
+        
+        material_xs % tms_majorant = material_xs % tms_majorant + &
+             atom_density * micro_xs(i_nuclide) % tms_majorant
+        
+     end do
+   
+   end subroutine tms_update_majorants
+
+
+!===============================================================================
+! TMS_CALCULATE_NUCLIDE_XS 
+!===============================================================================
+
+      ! S(a,b) -materiaalitarkistus pitaa saada jonnekin!
+
+      subroutine tms_calculate_nuclide_xs(i_nuclide, kT_mat, E) 
+        integer, intent(in) :: i_nuclide ! index of nuclide 
+        real(8), intent(in) :: kT_mat  ! material temperature in MeV
+        real(8), intent(in) :: E       ! L-frame energy of neutron         
+        
+        type(Nuclide), pointer :: nuc ! nuclide pointer
+        integer :: i_grid ! energy grid index 
+        real(8) :: beta_vn ! beta * speed of neutron 
+        real(8) :: beta_vt ! beta * speed of target
+        real(8) :: beta_vr_sq ! square of beta * relative speed 
+        real(8) :: alpha   ! 
+        real(8) :: c     !
+        real(8) :: Er
+        real(8) :: accept_prob ! 
+        real(8) :: beta_vt_sq !
+        real(8) :: mu 
+        real(8) :: r1, r2 
+        real(8) :: f ! xs interpolation factor        
+        real(8) :: kT      ! temperature difference in MeV
+        real(8) :: cdint ! Doppler integral for constant xs
+     
+        ! set nuclide pointer 
+
+        nuc => nuclides(i_nuclide) 
+        
+        ! amount of thermal motion to be "added" is the differenct between
+        ! the material temperature and the nuclide (xs) temperature 
+        
+        kT = kT_mat - nuc % kT 
+     
+        !========================
+        ! First some checks 
+        !========================
+        
+        ! This should be checked already in the initialization phase
+        ! (is it ?) 
+        if ( kT < -0.001*K_BOLTZMANN ) then
+           message = "Negative temperature in TMS sampling: T = " &
+                // trim(to_str(kT/K_BOLTZMANN))
+           call fatal_error()
+        else if ( kT < 0.001*K_BOLTZMANN ) then
+           
+           ! if the temperature difference is neglible skip sampling 
+           ! and use Er = E 
+           
+           Er = E 
+        else if ( nuc % urr_present .and. E > nuc % urr_data % energy(1)) then
+           ! if the neutron is above lower boundary of ures region,
+           ! skip sampling and use Er = E (no Doppler-broadening!)           
+
+           Er = E
+        else
+           
+           !========================
+           ! Sample target velocity
+           !========================
+        
+           ! The distribution from which the target velocity is sampled is the same
+           ! as in the free gas treatment -> also the sampling procedure is the same 
+           ! (decided to copy it here from sample_target_velocity in case DBRC will 
+           ! be implemented in near future and to get rid of energy thresholds ) 
+  
+           ! calculate beta
+           beta_vn = sqrt(nuc % awr * E / kT)
+           
+           alpha = ONE/(ONE + sqrt(pi)*beta_vn/TWO)
+        
+           do
+              ! Sample two random numbers
+              r1 = prn()
+              r2 = prn()
+              
+              if (prn() < alpha) then
+                 ! With probability alpha, we sample the distribution p(y) =
+                 ! y*e^(-y). This can be done with sampling scheme C45 frmo the Monte
+                 ! Carlo sampler
+                 
+                 beta_vt_sq = -log(r1*r2)
+                 
+              else
+                 ! With probability 1-alpha, we sample the distribution p(y) = y^2 *
+                 ! e^(-y^2). This can be done with sampling scheme C61 from the Monte
+                 ! Carlo sampler
+                 
+                 c = cos(PI/TWO * prn())
+                 beta_vt_sq = -log(r1) - log(r2)*c*c
+              end if
+              
+              ! Determine beta * vt
+              beta_vt = sqrt(beta_vt_sq)
+              
+              ! Sample cosine of angle between neutron and target velocity
+              mu = TWO*prn() - ONE
+              
+              
+              beta_vr_sq = beta_vn*beta_vn + beta_vt_sq - 2*beta_vn*beta_vt*mu
+              ! Determine rejection probability
+              accept_prob = sqrt(beta_vr_sq) /(beta_vn + beta_vt)
+              
+              ! Perform rejection sampling on vt and mu
+              if (prn() < accept_prob) exit
+           end do
+           
+           ! Store "relative energy" = energy corresponding to rel. velocity
+           Er = beta_vr_sq * kT / nuc % awr 
+           
+        end if
+     
+        !======================================================
+        ! Find cross sections corresponding to this energy
+        !======================================================
+        
+        message="E " // to_str(E) // " Er: " // to_str(Er) // " nuc " // nuc % name
+        call write_message()
+        
+        ! Find energy index on unionized grid          
+        if (grid_method == GRID_UNION) call find_energy_index(Er)
+        
+        ! Get i_grid
+        
+        select case(grid_method)
+        case(GRID_UNION)
+           i_grid = nuc % grid_index(union_grid_index)          
+        
+        case(GRID_NUCLIDE)
+           
+           ! If we're not using the unionized grid, we have to do a binary search on
+           ! the nuclide energy grid in order to determine which points to
+           ! interpolate between
+           
+           if (E < nuc % energy(1)) then
+              i_grid = 1
+           elseif (E > nuc % energy(nuc % n_grid)) then
+              i_grid = nuc % n_grid - 1
+           else
+              i_grid = binary_search(nuc % energy, nuc % n_grid, E)
+           end if
+           
+        end select
+        
+        ! check for rare case where two energy points are the same
+        if (nuc % energy(i_grid) == nuc % energy(i_grid+1)) i_grid = i_grid + 1
+        
+        ! interpolation factor
+        
+        f = ( Er - nuc % energy(i_grid)) / & 
+             ( nuc % energy( i_grid + 1 ) - nuc % energy(i_grid))
+        
+        ! get Doppler-integral for constant cross sections only once
+        ! since it is quite costly to calculate
+        
+        cdint=cdintegral(E, kT, nuc % awr )
+                        
+        !==========================================================================
+        ! do the same things as in calculate_nuclide_xs, but multiply cross
+        ! sections with cdint.
+        !==========================================================================
+        
+        micro_xs(i_nuclide) % index_grid    = i_grid
+        micro_xs(i_nuclide) % interp_factor = f
+        
+        ! Initialize sab treatment to false
+        micro_xs(i_nuclide) % index_sab   = NONE
+        micro_xs(i_nuclide) % elastic_sab = ZERO
+        micro_xs(i_nuclide) % use_ptable  = .false.
+        
+        ! Initialize nuclide cross-sections to zero
+        micro_xs(i_nuclide) % fission    = ZERO
+        micro_xs(i_nuclide) % nu_fission = ZERO
+        micro_xs(i_nuclide) % kappa_fission  = ZERO
+        
+        ! Calculate microscopic nuclide total cross section
+        micro_xs(i_nuclide) % total = ( (ONE - f) * nuc % total(i_grid) &
+             + f * nuc % total(i_grid+1) ) * cdint 
+        
+        ! Calculate microscopic nuclide total cross section
+        micro_xs(i_nuclide) % elastic = ( (ONE - f) * nuc % elastic(i_grid) &
+             + f * nuc % elastic(i_grid+1) ) * cdint
+        
+        ! Calculate microscopic nuclide absorption cross section
+        micro_xs(i_nuclide) % absorption = ( (ONE - f) * nuc % absorption( &
+             i_grid) + f * nuc % absorption(i_grid+1) ) * cdint 
+        
+        if (nuc % fissionable) then
+           ! Calculate microscopic nuclide total cross section
+           micro_xs(i_nuclide) % fission = ( (ONE - f) * nuc % fission(i_grid) &
+                + f * nuc % fission(i_grid+1) ) * cdint 
+           
+           ! Calculate microscopic nuclide nu-fission cross section
+           micro_xs(i_nuclide) % nu_fission = ( (ONE - f) * nuc % nu_fission( &
+                i_grid) + f * nuc % nu_fission(i_grid+1) ) * cdint 
+           
+           ! Calculate microscopic nuclide kappa-fission cross section
+           ! The ENDF standard (ENDF-102) states that MT 18 stores
+           ! the fission energy as the Q_value (fission(1))
+           micro_xs(i_nuclide) % kappa_fission = &
+                nuc % reactions(nuc % index_fission(1)) % Q_value * &
+                micro_xs(i_nuclide) % fission * cdint 
+        end if
+        
+        ! Do not store energy, because we want to recalculate these 
+        ! for each collision 
+
+        micro_xs(i_nuclide) % last_E = ZERO
+        
+   end subroutine tms_calculate_nuclide_xs
+         
+ end module tms_onthefly
+ 
