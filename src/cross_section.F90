@@ -510,6 +510,16 @@ contains
        return
     end if
 
+! Check for ptables. TMS method is not yet able to handle URR and is 
+! incompatible with the ptable treatment (the tables are temperature
+! dependent). To avoid misusage of TMS, force ptables = false. 
+
+    if ( urr_ptables_on ) then
+       message="TMS cannot be used with URR ptable treatment. Please & 
+            add <ptables>false</ptables> in settings.xml"
+       call fatal_error()
+    end if
+
 ! Print message (this is unimportant and can be removed )
     
     message="Initializing TMS for all nuclides in " // trim(to_str(n)) &
