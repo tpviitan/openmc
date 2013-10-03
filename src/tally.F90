@@ -524,6 +524,10 @@ contains
 
             atom_density = mat % atom_density(j)
             
+            ! When tallying with TMS, the microscopic cross sections
+            ! need to be multiplied with cdint to get the correct
+            ! reaction rates.
+
             if( mat % tmstemp >= 0.0) atom_density = atom_density * &
                  micro_xs(i_nuclide) % cdint 
             
@@ -665,11 +669,18 @@ contains
                   score = ZERO
 
                   ! Get pointer to current material
-                  mat => materials(p % material)
+                  mat => materials(p % material)                 
 
                   do l = 1, mat % n_nuclides
                     ! Get atom density
                     atom_density = mat % atom_density(l)
+                    
+                    ! When tallying with TMS, the microscopic cross sections
+                    ! need to be multiplied with cdint to get the correct
+                    ! reaction rates. 
+
+                    if( mat % tmstemp >= 0.0) atom_density = atom_density * &
+                         micro_xs(i_nuclide) % cdint 
                     
                     ! Get index in nuclides array
                     i_nuc = mat % nuclide(l)
