@@ -744,16 +744,15 @@ contains
         real(8) :: a, ainv, cdint;
         
         a = sqrt(awr*E/(dkT));
-
-        ! It might be possible to optimize this a little bit further. 
-        ! (see MCNP5 manual page 2-29 "adjusting the elastic cross section"
-        ! for more details)
-
+        
+        ! With higher values of a the routine can be somewhat optimized
         if(a > 250) then
-           cdint=1.0
+           cdint=ONE
+        else if ( a > 2.568 ) then
+           cdint=ONE + 0.5*ainv*ainv
         else
            ainv = 1/a;
-           cdint=(1.0 + 0.5*ainv*ainv)*erf(a) + exp(-a*a)*ainv/SQRTPI;      
+           cdint=(ONE + 0.5*ainv*ainv)*erf(a) + exp(-a*a)*ainv/SQRTPI;      
         end if
 
       end function cdintegral
