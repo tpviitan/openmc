@@ -3,6 +3,7 @@ module initialize
   use ace,              only: read_xs
   use bank_header,      only: Bank
   use constants
+  use cross_section,    only: init_tms
   use dict_header,      only: DictIntInt, ElemKeyValueII
   use energy_grid,      only: unionized_grid
   use error,            only: fatal_error, warning
@@ -21,7 +22,6 @@ module initialize
   use string,           only: to_str, str_to_int, starts_with, ends_with
   use tally_header,     only: TallyObject, TallyResult
   use tally_initialize, only: configure_tallies
-  use tms_onthefly
 
 #ifdef MPI
   use mpi

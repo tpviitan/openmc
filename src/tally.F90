@@ -523,6 +523,10 @@ contains
             end do NUCLIDE_MAT_LOOP
 
             atom_density = mat % atom_density(j)
+            
+            if( mat % tmstemp >= 0.0) atom_density = atom_density * &
+                 micro_xs(i_nuclide) % cdint 
+            
           end if
 
           ! Determine score for each bin
@@ -531,6 +535,7 @@ contains
             score_bin = t % score_bins(j)
 
             if (i_nuclide > 0) then
+
               ! ================================================================
               ! DETERMINE NUCLIDE CROSS SECTION
 
@@ -542,7 +547,7 @@ contains
               case (SCORE_TOTAL)
                 ! Total cross section is pre-calculated
                 score = micro_xs(i_nuclide) % total * &
-                     atom_density * flux
+                     atom_density * flux 
 
               case (SCORE_SCATTER)
                 ! Scattering cross section is pre-calculated

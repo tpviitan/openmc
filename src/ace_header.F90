@@ -208,7 +208,7 @@ module ace_header
 
   type NuclideMicroXS
     integer :: index_grid      ! index on nuclide energy grid
-    integer :: index_temp      ! temperature index for nuclide
+!     integer :: index_temp      ! temperature index for nuclide WTF
     real(8) :: last_E = 0.0    ! last evaluated energy
     real(8) :: interp_factor   ! interpolation factor on nuc. energy grid
     real(8) :: total           ! microscropic total xs
@@ -220,7 +220,7 @@ module ace_header
     
     ! For TMS
     real(8) :: tms_majorant    ! microscopic TMS majorant at the current E
-    
+    real(8) :: cdint = 1.000   ! 
 
     ! Information for S(a,b) use
     integer :: index_sab   ! index in sab_tables (zero means no table)

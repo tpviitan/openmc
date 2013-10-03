@@ -75,15 +75,32 @@ contains
     integer :: i_nuclide    ! index in nuclides array
     integer :: i_reaction   ! index in nuc % reactions array
     type(Nuclide), pointer, save :: nuc => null()
+    type(Material), pointer :: mat
+
 !$omp threadprivate(nuc)
 
-    i_nuclide = sample_nuclide(p, 'total  ')
+    mat => materials(p % material)    
+    
+
+    if ( mat % tmstemp >= 0.0 ) then
+       ! In TMS tranport the collision nuclide has already
+       ! been sampled 
+       
+       i_nuclide = p % event_nuclide
+       nuc => nuclides(i_nuclide)
+              
+    else
+       i_nuclide = sample_nuclide(p, 'total  ')
+       
+       ! Save which nuclide particle had collision with
+       p % event_nuclide = i_nuclide
+
+       nuc => nuclides(i_nuclide)
+              
+    end if
 
     ! Get pointer to table
     nuc => nuclides(i_nuclide)
-
-    ! Save which nuclide particle had collision with
-    p % event_nuclide = i_nuclide
 
     ! Create fission bank sites. Note that while a fission reaction is sampled,
     ! it never actually "happens", i.e. the weight of the particle does not
@@ -216,6 +233,8 @@ contains
     cutoff = prn() * micro_xs(i_nuclide) % fission
     prob   = ZERO
 
+    ! Taalla tosiaan kaydaan 
+
     ! Loop through each partial fission reaction type
 
     FISSION_REACTION_LOOP: do i = 1, nuc % n_fission
@@ -232,7 +251,7 @@ contains
       ! Create fission bank sites if fission occus
       if (prob > cutoff) exit FISSION_REACTION_LOOP
     end do FISSION_REACTION_LOOP
-
+           
   end subroutine sample_fission
 
 !===============================================================================
@@ -245,6 +264,10 @@ contains
     integer,        intent(in)    :: i_nuclide
 
     if (survival_biasing) then
+       
+       message="survival biasing"
+       call fatal_error()
+
       ! Determine weight absorbed in survival biasing
       p % absorb_wgt = p % wgt * micro_xs(i_nuclide) % absorption / &
            micro_xs(i_nuclide) % total
@@ -268,7 +291,8 @@ contains
 !$omp critical
         global_tallies(K_ABSORPTION) % value = &
              global_tallies(K_ABSORPTION) % value + p % wgt * &
-             micro_xs(i_nuclide) % nu_fission / micro_xs(i_nuclide) % absorption
+             micro_xs(i_nuclide) % nu_fission &
+             / micro_xs(i_nuclide) % absorption
 !$omp end critical
 
         p % alive = .false.
@@ -313,6 +337,7 @@ contains
     real(8) :: f
     real(8) :: prob
     real(8) :: cutoff
+    type(Material), pointer :: mat 
     type(Nuclide),  pointer, save :: nuc => null()
     type(Reaction), pointer, save :: rxn => null()
 !$omp threadprivate(nuc, rxn)
@@ -326,7 +351,7 @@ contains
     ! case, we need to sample a reaction via the cutoff variable
     prob = ZERO
     cutoff = prn() * (micro_xs(i_nuclide) % total - &
-         micro_xs(i_nuclide) % absorption)
+         micro_xs(i_nuclide) % absorption)  
 
     prob = prob + micro_xs(i_nuclide) % elastic
     if (prob > cutoff) then
@@ -343,8 +368,10 @@ contains
         rxn => nuc % reactions(1)
 
         ! Perform collision physics for elastic scattering
+        mat => materials(p % material)
+
         call elastic_scatter(i_nuclide, rxn, &
-             p % E, p % coord0 % uvw, p % mu)
+             p % E, p % coord0 % uvw, p % mu, mat % tmstemp)
       end if
 
       p % event_MT = ELASTIC
@@ -383,7 +410,7 @@ contains
 
         ! add to cumulative probability
         prob = prob + ((ONE - f)*rxn%sigma(i_grid - rxn%threshold + 1) & 
-             + f*(rxn%sigma(i_grid - rxn%threshold + 2)))
+             + f*(rxn%sigma(i_grid - rxn%threshold + 2))) 
       end do
 
       ! Perform collision physics for inelastics scattering
@@ -403,13 +430,14 @@ contains
 ! target.
 !===============================================================================
 
-  subroutine elastic_scatter(i_nuclide, rxn, E, uvw, mu_lab)
+  subroutine elastic_scatter(i_nuclide, rxn, E, uvw, mu_lab, tmstemp)
 
     integer, intent(in)     :: i_nuclide
     type(Reaction), pointer :: rxn
     real(8), intent(inout)  :: E
     real(8), intent(inout)  :: uvw(3)
     real(8), intent(out)    :: mu_lab
+    real(8), intent(in)     :: tmstemp
 
     real(8) :: awr       ! atomic weight ratio of target
     real(8) :: mu_cm     ! cosine of polar angle in center-of-mass
@@ -432,7 +460,7 @@ contains
 
     ! Sample velocity of target nucleus
     if (.not. micro_xs(i_nuclide) % use_ptable) then
-      call sample_target_velocity(nuc, v_t, E, uvw)
+      call sample_target_velocity(nuc, v_t, E, uvw, tmstemp)
     else
       v_t = ZERO
     end if
@@ -630,12 +658,13 @@ contains
 ! for this method can be found in FRA-TM-123.
 !===============================================================================
 
-  subroutine sample_target_velocity(nuc, v_target, E, uvw)
+  subroutine sample_target_velocity(nuc, v_target, E, uvw, tmstemp)
 
     type(Nuclide),  pointer :: nuc
     real(8), intent(out)    :: v_target(3)
     real(8), intent(in)     :: E
     real(8), intent(in)     :: uvw(3)
+    real(8), intent(in)     :: tmstemp
 
     real(8) :: kT          ! equilibrium temperature of target in MeV
     real(8) :: alpha       ! probability of sampling f2 over f1
@@ -649,7 +678,11 @@ contains
     real(8) :: vt          ! speed of target
 
     ! Determine equilibrium temperature in MeV
-    kT = nuc % kT
+    if(tmstemp >= 0) then
+       kT = tmstemp
+    else
+       kT = nuc % kT
+    end if
 
     ! Check if energy is above threshold
     if (E >= FREE_GAS_THRESHOLD * kT .and. nuc % awr > ONE) then
@@ -755,10 +788,12 @@ contains
     else
       weight = ONE
     end if
-
+    
+    ! Tää menee varmaan perseelleen, koska toi keff on väärin laskettu.
+    ! pitäisköhän tuota kokeilla kertoa vielä geellä? tarkista vanha paperi 
     ! Determine expected number of neutrons produced
-    nu_t = p % wgt / keff * weight * micro_xs(i_nuclide) % nu_fission / &
-         micro_xs(i_nuclide) % total
+    nu_t = p % wgt / keff * weight * micro_xs(i_nuclide) % nu_fission  &
+          / micro_xs(i_nuclide) % total
 
     ! Sample number of neutrons produced
     if (prn() > nu_t - int(nu_t)) then

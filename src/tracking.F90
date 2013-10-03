@@ -1,6 +1,7 @@
 module tracking
 
-  use cross_section,   only: calculate_xs
+!only: calculate_xs
+  use cross_section   
   use error,           only: fatal_error, warning
   use geometry,        only: find_cell, distance_to_boundary, cross_surface, &
                              cross_lattice, check_cell_overlap
@@ -14,7 +15,6 @@ module tracking
   use tally,           only: score_analog_tally, score_tracklength_tally, &
                              score_surface_current
   
-  use tms_onthefly
 
 contains
 
@@ -42,7 +42,7 @@ contains
     type(LocalCoord), pointer, save :: coord => null()
     type(Material), pointer :: mat ! material pointer
     type(Nuclide), pointer :: nuc ! nuclide pointer 
-        
+    
 !$omp threadprivate(coord)
 
     ! Display message if high verbosity or trace is on
@@ -86,7 +86,6 @@ contains
 
       mat => materials(p % material)
 
-
       if (mat % tmstemp < 0) then
          !=====================================================================
          ! If TMS is not used for current material, use conventional transport
@@ -99,12 +98,12 @@ contains
          if (p % material /= p % last_material) call calculate_xs(p)
          
          ! Sample a distance to collision
-        if (material_xs % total == ZERO) then
+         if (material_xs % total == ZERO) then
             d_collision = INFINITY
          else
             d_collision = -log(prn()) / material_xs % total
          end if
-         
+
       else
          !=====================================================================
          ! If TMS is used, use sort of delta-tracking approach (not to be 
@@ -113,45 +112,68 @@ contains
          
          ! toi material pitää asettaa tai tää tarkistus ei skulaa 
          ! tarkistus energialle ? 
-
+         
          ! Calculate majorant cross sections for material and E 
          ! (these are constant, i.e. not sampled) 
 
-         if (p % material /= p % last_material) call tms_update_majorants(p)
-            
-         ! Sample all (other) microscopic and macroscopic cross sections
-         call calculate_xs(p)
-     
-         d_collision = 0.0;
+         !         if (p % material /= p % last_material) 
 
+         call tms_update_majorants(p)
+
+         ! Turhaa tyota
+         call calculate_xs(p)
+                  
+         ! Sample all (other) microscopic and macroscopic cross sections
+         ! These are used in the scoring of tallies
+     
+         d_collision = ZERO;
+                     
          ! advance neutron in small steps until a collision occurs
          ! or the neutron hits a boundary
          do 
-                        
-            ! Sample next collision point candidate 
-            d_collision = d_collision - log(prn()) / material_xs % tms_majorant
 
+            if(material_xs % tms_majorant == ZERO) then
+               d_collision=INFINITY
+            else
+               ! Sample next collision point candidate 
+               d_collision = d_collision - log(prn()) / material_xs % tms_majorant
+            end if
+            
             ! if the neutron went beyond the boundary, exit loop 
             if( d_collision > d_boundary) exit
 
             ! Sample target nuclide candidate based on majorants 
-            ! returns index of the sampled nuclide
+            ! returns index of the sampled nuclide     
+            
             i_nuclide = tms_sample_nuclide(p)
             
-            ! Resample target velocity (ekalla kertaa vois kierrattaa)
-            call tms_calculate_nuclide_xs(i_nuclide, mat % tmstemp, p % E)
+            ! Store as event nuclide
+            p % event_nuclide = i_nuclide                         
+
+            ! Resample velocity for current target 
+            call tms_sample_nuclide_xs(i_nuclide, mat % tmstemp, p % E)
             
+            ! pitäisi päivittää myös macro_xssät 
+
+            ! This can be removed if things work ok
+            if ( micro_xs(i_nuclide) % cdint * micro_xs(i_nuclide) % total / &
+                 micro_xs(i_nuclide) % tms_majorant > 1) then
+               message= "majorant exceeded in TMS sampling"
+               call warning()
+            end if
+                                   
             ! Rejection sampling 
             ! in case of an accepted collision, proceed 
-            if( prn() > micro_xs(i_nuclide) % total / & 
-                 micro_xs(i_nuclide) % tms_majorant )  exit
-         end do
-         
+            if( prn() < micro_xs(i_nuclide) % cdint * &
+                 micro_xs(i_nuclide) % total / & 
+                 micro_xs(i_nuclide) % tms_majorant ) exit
+                       
+         end do         
       end if
 
       ! Select smaller of the two distances
       distance = min(d_boundary, d_collision)
-
+      
       ! Advance particle
       coord => p % coord0
       do while (associated(coord))
@@ -159,15 +181,14 @@ contains
         coord => coord % next
       end do
 
-      ! Score track-length tallies      
-!      if (active_tracklength_tallies % size() > 0) &
-!           call score_tracklength_tally(p, distance)
+      if (active_tracklength_tallies % size() > 0) &
+           call score_tracklength_tally(p, distance)
 
       ! Score track-length estimate of k-eff
 !$omp critical
       global_tallies(K_TRACKLENGTH) % value = &
            global_tallies(K_TRACKLENGTH) % value + p % wgt * distance * &
-           material_xs % nu_fission
+           material_xs % nu_fission 
 !$omp end critical
 
       if (d_collision > d_boundary) then
@@ -207,7 +228,6 @@ contains
         ! Clear surface component
         p % surface = NONE
 
-        ! Tälle pitää tehdä tms-vastine tahi sisällyttää se tuohon
         call collision(p)
 
         ! Score collision estimator tallies -- this is done after a collision
@@ -247,13 +267,14 @@ contains
           coord => coord % next
         end do
       end if
-
+      
       ! If particle has too many events, display warning and kill it
       n_event = n_event + 1
       if (n_event == MAX_EVENTS) then
         message = "Particle " // trim(to_str(p%id)) // " underwent maximum &
              &number of events."
-        call warning()
+        call fatal_error()
+!        call warning()
         p % alive = .false.
       end if
 
