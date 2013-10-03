@@ -540,9 +540,18 @@ contains
     do i = 1, n_materials
 
        mat => materials(i) 
-       
+             
        if ( mat % tmstemp >= 0.0 ) then
           n = n + 1
+
+          ! Check at this point that no S(a,b) tables are associated with
+          ! the material. TMS is currently (and will be in the near future)
+          ! not compatible with S(a,b)
+          if ( mat % n_sab > 0) then
+             message="S(a,b) tables associated with TMS material (id = "// &
+                  trim(to_str(mat % id)) // " )"
+             call fatal_error()
+          end if          
 
           ! loop over nuclides in material and set maximum 
           
@@ -555,7 +564,7 @@ contains
              
              if ( nuclides(nuclide_i) % max_kT < mat % tmstemp ) then
                 nuclides(nuclide_i) % max_kT = mat % tmstemp
-             end if
+             end if            
                           
           end do                    
        end if
