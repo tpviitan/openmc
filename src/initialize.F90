@@ -3,7 +3,7 @@ module initialize
   use ace,              only: read_xs
   use bank_header,      only: Bank
   use constants
-  use cross_section,    only: init_tms
+  use cross_section,    only: tms_init
   use dict_header,      only: DictIntInt, ElemKeyValueII
   use energy_grid,      only: unionized_grid
   use error,            only: fatal_error, warning
@@ -113,7 +113,7 @@ contains
       end if
 
       ! Initialize data for TMS transport (calculate TMS majorants etc)
-      call init_tms()
+      call tms_init()
 
       ! Allocate and setup tally stride, matching_bins, and tally maps
       call configure_tallies()

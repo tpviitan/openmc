@@ -31,6 +31,7 @@ contains
     integer :: last_cell       ! most recent cell particle was in
     integer :: n_event         ! number of collisions/crossings
     integer :: i               ! loop variable over nuclides
+    integer :: i_tms_event     ! loop variable over TMS samples 
     integer :: i_nuclide       ! nuclide index 
     real(8) :: d_boundary      ! distance to nearest boundary
     real(8) :: d_collision     ! sampled distance to collision
@@ -107,30 +108,25 @@ contains
       else
          !=====================================================================
          ! If TMS is used, use sort of delta-tracking approach (not to be 
-         ! confused with Woodcock delta-tracking, which is geometry-related)
+         ! confused with Woodcock delta-tracking !!!)
          !=====================================================================
          
-         ! toi material pitää asettaa tai tää tarkistus ei skulaa 
-         ! tarkistus energialle ? 
-         
-         ! Calculate majorant cross sections for material and E 
-         ! (these are constant, i.e. not sampled) 
+         ! Calculate majorant cross sections for material 
+         ! (these are constant, i.e. not sampled, and thus need to be updated
+         ! only once per material and energy)
 
-         !         if (p % material /= p % last_material) 
+         if (p % material /= p % last_material ) call tms_update_majorants(p)
+        
+         ! However, the macroscopic and microscopic material majorants are
+         ! sampled separately for each track
 
-         call tms_update_majorants(p)
-
-         ! Turhaa tyota
          call calculate_xs(p)
                   
-         ! Sample all (other) microscopic and macroscopic cross sections
-         ! These are used in the scoring of tallies
-     
          d_collision = ZERO;
                      
          ! advance neutron in small steps until a collision occurs
-         ! or the neutron hits a boundary
-         do 
+         ! or the neutron hits a boundary.
+         do i_tms_event = 1, MAX_EVENTS 
 
             if(material_xs % tms_majorant == ZERO) then
                d_collision=INFINITY
@@ -150,25 +146,32 @@ contains
             ! Store as event nuclide
             p % event_nuclide = i_nuclide                         
 
-            ! Resample velocity for current target 
-            call tms_sample_nuclide_xs(i_nuclide, mat % tmstemp, p % E)
+            ! Resample velocity for current target.
+            ! On first round the previously sampled value (at calculate_xs) 
+            ! can be used 
+            if(i_tms_event > 1) call tms_sample_nuclide_xs(i_nuclide, &
+                 mat % tmstemp, p % E)
             
-            ! pitäisi päivittää myös macro_xssät 
+            ! The following if-block can be removed if things work OK
+            ! The majorant can be occasionally exceeded without any problems, 
+            ! but frequent exceeding of the majorant introduces error in the 
+            ! results 
 
-            ! This can be removed if things work ok
             if ( micro_xs(i_nuclide) % cdint * micro_xs(i_nuclide) % total / &
                  micro_xs(i_nuclide) % tms_majorant > 1) then
                message= "majorant exceeded in TMS sampling"
                call warning()
             end if
                                    
-            ! Rejection sampling 
-            ! in case of an accepted collision, proceed 
+            ! Rejection sampling for collision point:  
+            ! in case of an accepted collision, proceed to reaction sampling
+            ! in case of a rejection, repeat track-length sampling procedure 
+
             if( prn() < micro_xs(i_nuclide) % cdint * &
                  micro_xs(i_nuclide) % total / & 
                  micro_xs(i_nuclide) % tms_majorant ) exit
                        
-         end do         
+         end do 
       end if
 
       ! Select smaller of the two distances
@@ -273,8 +276,7 @@ contains
       if (n_event == MAX_EVENTS) then
         message = "Particle " // trim(to_str(p%id)) // " underwent maximum &
              &number of events."
-        call fatal_error()
-!        call warning()
+        call warning()
         p % alive = .false.
       end if
 

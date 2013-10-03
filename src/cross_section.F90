@@ -92,24 +92,27 @@ contains
       ! Determine microscopic cross sections for this nuclide
       i_nuclide = mat % nuclide(i)
 
+      ! Copy atom density of nuclide in material
+      atom_density = mat % atom_density(i)
+
       ! Calculate microscopic cross section for this nuclide
-      if (p % E /= micro_xs(i_nuclide) % last_E) then
-         if( mat % tmstemp < 0.0) then
-            call calculate_nuclide_xs(i_nuclide, i_sab, p % E)
-            micro_xs(i_nuclide) % cdint = 1.000
-         else
-            call tms_sample_nuclide_xs(i_nuclide, mat % tmstemp, p % E)
-         end if
+      if (p % E /= micro_xs(i_nuclide) % last_E .and. &
+           mat % tmstemp < 0.0 ) then
+         call calculate_nuclide_xs(i_nuclide, i_sab, p % E)
+      else if( mat % tmstemp >= 0.0 ) then
+
+         ! This samples target-at-rest cross sections for i_nuclide
+         call tms_sample_nuclide_xs(i_nuclide, mat % tmstemp, p % E)
+         
+         ! The material macroscopic cross sections, used in scoring
+         ! of keff and reaction rates, need to be multiplied by cdint
+         ! in TMS mode 
+         atom_density = atom_density * micro_xs(i_nuclide) % cdint         
+
       end if
 
       ! ========================================================================
       ! ADD TO MACROSCOPIC CROSS SECTION
-
-      ! Copy atom density of nuclide in material
-      atom_density = mat % atom_density(i)
-
-      ! multiple with cdint 
-      atom_density = atom_density * micro_xs(i_nuclide) % cdint 
 
       ! Add contributions to material macroscopic total cross section
       material_xs % total = material_xs % total + &
@@ -136,8 +139,7 @@ contains
            atom_density * micro_xs(i_nuclide) % kappa_fission
             
     end do
-    
-    
+       
   end subroutine calculate_xs
 
 !===============================================================================
@@ -493,16 +495,15 @@ contains
 
   end subroutine find_energy_index
 
-
-  !===============================================================================
-! INIT_TMS makes all the initializations needed for transport with TMS 
+!===============================================================================
+! TMS_INIT makes all the initializations needed for transport with TMS 
 ! (find maximum temperature for each nuclide, generate majorants)
 !===============================================================================
 
-  subroutine init_tms()
-    integer :: n
+  subroutine tms_init()
+    integer :: n       ! number of TMS materials in problem
 
-    n = set_maximum_temperatures() 
+    n = tms_set_maximum_temperatures() 
     
     if( n == 0 ) then
        ! if there are no TMS materials in the problem, init nothing
@@ -513,18 +514,18 @@ contains
     
     message="Initializing TMS for all nuclides in " // trim(to_str(n)) &
          // " materials..." 
-    call write_message()
+    call write_message(8)
 
-    call calculate_tms_majorants()
+    call tms_calculate_majorants()
 
-  end subroutine init_tms
+  end subroutine tms_init
 
 !===============================================================================
-! SET_MAXIMUM_TEMPERATURES finds the maximum temperature of each nuclide
+! TMS_SET_MAXIMUM_TEMPERATURES finds the maximum temperature of each nuclide
 ! for which the TMS treatment is used. Returns the number of TMS materials. 
 !===============================================================================
 
-  function set_maximum_temperatures() result(n)
+  function tms_set_maximum_temperatures() result(n)
     integer :: i        ! loop index for materials
     integer :: u        ! loop index for nuclides 
     integer :: n        ! Number of TMS materials 
@@ -560,14 +561,14 @@ contains
        end if
     end do       
     
-  end function set_maximum_temperatures
+  end function tms_set_maximum_temperatures
 
 !===============================================================================
-! CALCULATE_TMS_MAJORANTS generates the microscopic majorant cross sections 
-! for each nuclide. ("temperature majorant of total cross section")
+! TMS_CALCULATE_MAJORANTS generates the microscopic majorant cross sections 
+! for each nuclide. ("temperature majorant" of total cross section)
 !===============================================================================
 
-  subroutine calculate_tms_majorants()
+  subroutine tms_calculate_majorants()
 
     class(Nuclide), pointer   :: nuc ! pointer to nuclide     
     integer :: u           ! loop index for nuclides 
@@ -726,11 +727,12 @@ contains
 
     end do
     
-    end subroutine calculate_tms_majorants
+  end subroutine tms_calculate_majorants
 
 !===============================================================================
 ! CDINTEGRAL calculates the Doppler-broadening integral for constant cross 
-! section. In the TMS articles [1-x], this is denoted with g(E,T,A)
+! section. In the TMS articles [1-x], this is denoted with g(E,T,A), also 
+! sometimes referred to as the "normalization factor"
 !===============================================================================
 
 
@@ -742,10 +744,14 @@ contains
         real(8) :: a, ainv, cdint;
         
         a = sqrt(awr*E/(dkT));
-        
+
+        ! It might be possible to optimize this a little bit further. 
+        ! (see MCNP5 manual page 2-29 "adjusting the elastic cross section"
+        ! for more details)
+
         if(a > 250) then
            cdint=1.0
-        else                    
+        else
            ainv = 1/a;
            cdint=(1.0 + 0.5*ainv*ainv)*erf(a) + exp(-a*a)*ainv/SQRTPI;      
         end if
@@ -753,7 +759,8 @@ contains
       end function cdintegral
           
 !===============================================================================
-! TMS_SAMPLE_NUCLIDE samples the target nuclide candidate 
+! TMS_SAMPLE_NUCLIDE samples the target nuclide candidate based on majorant 
+! cross sections
 !===============================================================================
   
       function tms_sample_nuclide(p) result(i_nuclide)
@@ -767,7 +774,6 @@ contains
         real(8) :: xs_nuc  ! aux varaible used in TMS nuclide sampling
         real(8) :: E       ! energy
         real(8) :: xs_maj_nuc ! nuclide-wise microscopic majorant
-        real(8) :: tn 
 
 
         ! set energy and material pointer 
@@ -807,13 +813,13 @@ contains
    subroutine tms_update_majorants(p)   
      
      type(Particle), intent(inout) :: p ! Particle pointer 
-     real(8) :: atom_density 
-     integer :: i_nuclide
-     integer :: i_grid
-     integer :: i ! loop variable over nuclides 
 
-     type(Material), pointer :: mat 
-     type(Nuclide), pointer :: nuc 
+     real(8) :: atom_density     
+     integer :: i_nuclide               ! index of nuclide
+     integer :: i_grid                  ! energy grid index 
+     integer :: i                       ! loop variable over nuclides 
+     type(Material), pointer :: mat     
+     type(Nuclide), pointer  :: nuc 
      
      material_xs % tms_majorant = ZERO
      
@@ -1009,14 +1015,13 @@ contains
         f = ( Er - nuc % energy(i_grid)) / & 
              ( nuc % energy( i_grid + 1 ) - nuc % energy(i_grid))
         
-        ! get Doppler-integral for constant cross sections only once
-        ! since it is quite costly to calculate
+        ! get Doppler-integral for constant cross sections
         
-        cdint=cdintegral(E, kT, nuc % awr )
-                        
+        micro_xs(i_nuclide) % cdint = cdintegral(E, kT, nuc % awr )
+
         !==========================================================================
-        ! do the same things as in calculate_nuclide_xs, but multiply cross
-        ! sections with cdint.
+        ! do the same things as in calculate_nuclide_xs minus URR and S(a,b) 
+        ! related stuff (neither works with TMS)
         !==========================================================================
         
         micro_xs(i_nuclide) % index_grid    = i_grid
@@ -1060,11 +1065,8 @@ contains
                 nuc % reactions(nuc % index_fission(1)) % Q_value * &
                 micro_xs(i_nuclide) % fission
         end if
-
-        micro_xs(i_nuclide) % cdint = cdint
         
-        ! Do not store energy, because we want to recalculate these 
-        ! for each collision 
+        ! This is not used in TMS transport, set to ZERO just in case
 
         micro_xs(i_nuclide) % last_E = ZERO
         
