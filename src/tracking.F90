@@ -30,19 +30,14 @@ contains
     integer :: lattice_crossed ! lattice boundary which particle crossed
     integer :: last_cell       ! most recent cell particle was in
     integer :: n_event         ! number of collisions/crossings
-    integer :: i               ! loop variable over nuclides
     integer :: i_tms_event     ! loop variable over TMS samples 
     integer :: i_nuclide       ! nuclide index 
     real(8) :: d_boundary      ! distance to nearest boundary
     real(8) :: d_collision     ! sampled distance to collision
     real(8) :: distance        ! distance particle travels
-    real(8) :: xs_micro        ! microscopic xs in target-at-rest frame
-    real(8) :: Er              ! target-at-rest energy of a TMS collision 
-    real(8) :: adens           ! atomic density
     logical :: found_cell      ! found cell which particle is in?
     type(LocalCoord), pointer, save :: coord => null()
     type(Material), pointer :: mat ! material pointer
-    type(Nuclide), pointer :: nuc ! nuclide pointer 
     
 !$omp threadprivate(coord)
 
@@ -149,7 +144,7 @@ contains
             ! Resample velocity for current target.
             ! On first round the previously sampled value (at calculate_xs) 
             ! can be used 
-            if(i_tms_event > 1) call tms_sample_nuclide_xs(i_nuclide, &
+            if( i_tms_event > 1 ) call tms_sample_nuclide_xs(i_nuclide, &
                  mat % tmstemp, p % E)
             
             ! The following if-block can be removed if things work OK

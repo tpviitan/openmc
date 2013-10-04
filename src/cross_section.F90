@@ -2,7 +2,7 @@ module cross_section
 
   use ace_header,      only: Nuclide, SAlphaBeta, Reaction, UrrData
   use constants
-  use error,           only: fatal_error
+  use error,           only: fatal_error, warning
   use fission,         only: nu_total
   use global
   use material_header, only: Material
@@ -511,12 +511,12 @@ contains
     end if
 
 ! Check for ptables. TMS method is not yet able to handle URR and is 
-! incompatible with the ptable treatment (the tables are temperature
-! dependent). To avoid misusage of TMS, force ptables = false. 
+! incompatible with the ptable treatment. To avoid misusage of TMS, 
+! force ptables = false. 
 
     if ( urr_ptables_on ) then
-       message="TMS cannot be used with URR ptable treatment. Please & 
-            add <ptables>false</ptables> in settings.xml"
+       message="TMS cannot be used with URR ptable treatment. Please " //& 
+            "add <ptables>false</ptables> in settings.xml"
        call fatal_error()
     end if
 
@@ -532,16 +532,17 @@ contains
 
 !===============================================================================
 ! TMS_SET_MAXIMUM_TEMPERATURES finds the maximum temperature of each nuclide
-! for which the TMS treatment is used. Returns the number of TMS materials. 
+! for which the TMS treatment is used. Also performs some important checks.
+! Returns the number of TMS materials. 
 !===============================================================================
 
   function tms_set_maximum_temperatures() result(n)
-    integer :: i        ! loop index for materials
-    integer :: u        ! loop index for nuclides 
-    integer :: n        ! Number of TMS materials 
-    integer :: nuclide_i ! index of nuclide
+    integer :: i           ! loop index for materials
+    integer :: u           ! loop index for nuclides 
+    integer :: n           ! number of TMS materials 
+    integer :: n_different ! number of nuclides for which 
+    integer :: nuclide_i   ! index of nuclide
     type(Material),    pointer :: mat => null()
-    type(Nuclide),     pointer :: nuc => null()
 
     n = 0;
     
@@ -552,6 +553,7 @@ contains
        mat => materials(i) 
              
        if ( mat % tmstemp >= 0.0 ) then
+
           n = n + 1
 
           ! Check at this point that no S(a,b) tables are associated with
@@ -567,6 +569,8 @@ contains
           
           do u = 1, mat % n_nuclides
              
+             n_different=0
+
              nuclide_i = mat % nuclide(u)
              
              ! If material temperature is larger than max T of nuclide,
@@ -574,9 +578,31 @@ contains
              
              if ( nuclides(nuclide_i) % max_kT < mat % tmstemp ) then
                 nuclides(nuclide_i) % max_kT = mat % tmstemp
-             end if            
+             end if      
+             
+             if ( mat % tmstemp - nuclides(nuclide_i) % kT > 0.001*K_BOLTZMANN) &
+                  n_different = n_different + 1 
                           
           end do                    
+
+          ! if there are no nuclides in this material for which the temperature 
+          ! difference between the cross sections and tmstemp is significant, 
+          ! do not use TMS for this material at all
+
+          if(n_different == 0) then
+             
+             message="TMS treatment disabled for material " // trim( &
+                  to_str(mat % id)) // ": nuclide temperatures " &
+                  // "are already equal to tmstemp ( " // trim( &
+                  to_str(mat % tmstemp / K_BOLTZMANN)) // " K )"
+             call warning()
+
+
+             mat % tmstemp = -1.000
+             n = n - 1
+          end if
+
+
        end if
     end do       
     
@@ -602,7 +628,7 @@ contains
     real(8) :: emin, emax ! energy boundaries for majorant
     real(8) :: max_xs   ! maximum value of cross section 
     real(8) :: f        ! factor for cross section interpolation 
-
+    real(8) :: xs       ! temporary storage for cross sections
     
 ! loop over all nuclides and calculate majorant for nuclides with 
 ! max_kT >= 0 (nuclides to be used with TMS)
@@ -696,8 +722,12 @@ contains
                 ihigh = ilow
              end if
              
-             do while ( nuc % energy(ihigh + 1) < emax )
-                ihigh = ihigh + 1                
+             do while ( ihigh + 1 < nuc % n_grid ) 
+                
+                if( nuc % energy(ihigh + 1) >= emax ) exit
+                                
+                ihigh = ihigh + 1  
+                
              end do
 
              ! look for maximum between ilow and ihigh
@@ -715,26 +745,26 @@ contains
              ! interpolate extremes and check 
 
              ! low:
-
-             f = (emin - nuc % energy(ilow-1))/( nuc % energy(ilow) - nuc % energy(ilow-1))
-             if ( nuc % total(ilow-1) + f * (nuc % total(ilow) - nuc % total(ilow-1)) &
-                  > max_xs ) then
-
-                max_xs = nuc % total(ilow-1) + f * (nuc % total(ilow) - nuc % total(ilow-1))
-
+             if( ilow == 1 ) then
+                xs = nuc % total(1)
+             else
+                f = (emin - nuc % energy(ilow-1))/( nuc % energy(ilow) - nuc % energy(ilow-1))
+                xs = nuc % total(ilow-1) + f * (nuc % total(ilow) - nuc % total(ilow-1))
              end if
              
+             if( xs > max_xs) max_xs = xs
+
              ! high:
-             f = (emax - nuc % energy(ihigh))/( nuc % energy(ihigh + 1) &
+
+             if( ihigh >= nuc % n_grid ) then
+                xs = nuc % total(nuc % n_grid)
+             else
+                f = (emax - nuc % energy(ihigh))/( nuc % energy(ihigh + 1) &
                   - nuc % energy(ihigh))
-
-             if ( nuc % total(ihigh) + f * (nuc % total(ihigh+1) - nuc % total(ihigh)) &
-                  > max_xs ) then
-
-                max_xs = nuc % total(ihigh) + f * (nuc % total(ihigh+1) - &
-                     nuc % total(ihigh))
-
+                xs = nuc % total(ihigh) + f * (nuc % total(ihigh+1) - nuc % total(ihigh))
              end if
+
+             if ( xs > max_xs) max_xs = xs
              
              ! Multiply by D-b integral for constant cross section and store 
              
@@ -762,16 +792,27 @@ contains
         
         real(8) :: a, ainv, cdint;
         
+! In case of insignificant temperature change, just return 1 
+! (this avoids division-by-zero problems). This should happen only
+! if a material with TMS has nuclides with cross sections both at 
+! tmstemp and at a temperature T < tmstemp
+
+        if( dkT < 0.001*K_BOLTZMANN) then
+           cdint = ONE 
+           return
+        end if
+         
         a = sqrt(awr*E/(dkT));
-        
+
         ! With higher values of a the routine can be somewhat optimized
         if(a > 250) then
            cdint=ONE
         else if ( a > 2.568 ) then
+           ainv = 1/a
            cdint=ONE + 0.5*ainv*ainv
         else
-           ainv = 1/a;
-           cdint=(ONE + 0.5*ainv*ainv)*erf(a) + exp(-a*a)*ainv/SQRTPI;      
+           ainv = 1/a
+           cdint=(ONE + 0.5*ainv*ainv)*erf(a) + exp(-a*a)*ainv/SQRTPI
         end if
 
       end function cdintegral
@@ -785,14 +826,11 @@ contains
 
         type(Particle), intent(in) :: p ! particle pointer 
 
-        type(Nuclide), pointer :: nuc ! nuclide pointer 
         type(Material), pointer :: mat ! material pointer 
         integer :: i       ! loop variable over nuclides in material
         integer :: i_nuclide  ! nuclide index
         real(8) :: xs_nuc  ! aux varaible used in TMS nuclide sampling
         real(8) :: E       ! energy
-        real(8) :: xs_maj_nuc ! nuclide-wise microscopic majorant
-
 
         ! set energy and material pointer 
         E = p % E        
@@ -910,7 +948,6 @@ contains
         real(8) :: r1, r2 
         real(8) :: f ! xs interpolation factor        
         real(8) :: kT      ! temperature difference in MeV
-        real(8) :: cdint ! Doppler integral for constant xs
      
         ! set nuclide pointer 
 
@@ -920,7 +957,11 @@ contains
         ! the material temperature and the nuclide (xs) temperature 
         
         kT = kT_mat - nuc % kT 
-     
+
+        ! init value 
+
+        Er = -1.00 
+
         !========================
         ! First some checks 
         !========================
@@ -933,16 +974,20 @@ contains
            call fatal_error()
         else if ( kT < 0.001*K_BOLTZMANN ) then
            
-           ! if the temperature difference is neglible skip sampling 
+           ! if the temperature difference is negligible skip sampling 
            ! and use Er = E 
            
            Er = E 
-        else if ( nuc % urr_present .and. E > nuc % urr_data % energy(1)) then
+        else if ( nuc % urr_present) then
+
            ! if the neutron is above lower boundary of ures region,
            ! skip sampling and use Er = E (no Doppler-broadening!)           
+           
+           if(E > nuc % urr_data % energy(1) ) Er = E
+           
+        end if
 
-           Er = E
-        else
+        if(Er < ZERO ) then
            
            !========================
            ! Sample target velocity
@@ -1029,7 +1074,7 @@ contains
         if (nuc % energy(i_grid) == nuc % energy(i_grid+1)) i_grid = i_grid + 1
         
         ! interpolation factor
-        
+
         f = ( Er - nuc % energy(i_grid)) / & 
              ( nuc % energy( i_grid + 1 ) - nuc % energy(i_grid))
         
