@@ -127,7 +127,8 @@ contains
                d_collision=INFINITY
             else
                ! Sample next collision point candidate 
-               d_collision = d_collision - log(prn()) / material_xs % tms_majorant
+               d_collision = d_collision - &
+                    log(prn()) / material_xs % tms_majorant
             end if
             
             ! if the neutron went beyond the boundary, exit loop 

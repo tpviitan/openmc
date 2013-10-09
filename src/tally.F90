@@ -674,16 +674,17 @@ contains
                   do l = 1, mat % n_nuclides
                     ! Get atom density
                     atom_density = mat % atom_density(l)
-                    
+                                        
+                    ! Get index in nuclides array
+                    i_nuc = mat % nuclide(l)
+
                     ! When tallying with TMS, the microscopic cross sections
                     ! need to be multiplied with cdint to get the correct
                     ! reaction rates. 
 
                     if( mat % tmstemp >= 0.0) atom_density = atom_density * &
-                         micro_xs(i_nuclide) % cdint 
-                    
-                    ! Get index in nuclides array
-                    i_nuc = mat % nuclide(l)
+                         micro_xs(i_nuc) % cdint 
+
 
                     ! TODO: The following search for the matching reaction could
                     ! be replaced by adding a dictionary on each Nuclide
@@ -924,6 +925,7 @@ contains
           mat => materials(p % material)
 
           do i = 1, mat % n_nuclides
+
             ! Get atom density
             atom_density = mat % atom_density(i)
 

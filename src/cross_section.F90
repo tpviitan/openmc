@@ -509,7 +509,7 @@ contains
        ! if there are no TMS materials in the problem, init nothing
        return
     end if
-
+   
 ! Check for ptables. TMS method is not yet able to handle URR and is 
 ! incompatible with the ptable treatment. To avoid misusage of TMS, 
 ! force ptables = false. 
@@ -520,11 +520,13 @@ contains
        call fatal_error()
     end if
 
+    call tms_set_thresholds()
+    
 ! Print message (this is unimportant and can be removed )
     
     message="Initializing TMS for all nuclides in " // trim(to_str(n)) &
          // " materials..." 
-    call write_message(8)
+    call write_message()
 
     call tms_calculate_majorants()
 
@@ -546,7 +548,7 @@ contains
 
     n = 0;
     
-    ! loop over materials
+    ! loop over all materials
     
     do i = 1, n_materials
 
@@ -554,7 +556,7 @@ contains
              
        if ( mat % tmstemp >= 0.0 ) then
 
-          n = n + 1
+          n = n + 1          
 
           ! Check at this point that no S(a,b) tables are associated with
           ! the material. TMS is currently (and will be in the near future)
@@ -567,10 +569,10 @@ contains
 
           ! loop over nuclides in material and set maximum 
           
-          do u = 1, mat % n_nuclides
-             
-             n_different=0
+          n_different = 0
 
+          do u = 1, mat % n_nuclides
+                          
              nuclide_i = mat % nuclide(u)
              
              ! If material temperature is larger than max T of nuclide,
@@ -580,10 +582,13 @@ contains
                 nuclides(nuclide_i) % max_kT = mat % tmstemp
              end if      
              
-             if ( mat % tmstemp - nuclides(nuclide_i) % kT > 0.001*K_BOLTZMANN) &
-                  n_different = n_different + 1 
-                          
-          end do                    
+             if ( mat % tmstemp - nuclides(nuclide_i) % kT & 
+                  > 0.001*K_BOLTZMANN) then
+                n_different = n_different + 1 
+             end if
+
+             
+          end do
 
           ! if there are no nuclides in this material for which the temperature 
           ! difference between the cross sections and tmstemp is significant, 
@@ -597,17 +602,85 @@ contains
                   to_str(mat % tmstemp / K_BOLTZMANN)) // " K )"
              call warning()
 
-
              mat % tmstemp = -1.000
              n = n - 1
           end if
-
 
        end if
     end do       
     
   end function tms_set_maximum_temperatures
 
+!===============================================================================
+! TMS_SET_THRESHOLDS finds maximum energies for which TMS will be used 
+!===============================================================================
+
+  subroutine tms_set_thresholds()
+    integer :: i
+    integer :: m           ! loop index for reactions
+
+    real(8) :: low_threshold ! lower threshold energy 
+    real(8) :: ures_boundary ! energy of ures boundary
+    real(8) :: E_t        ! threshold energy 
+
+    type(Reaction),    pointer :: rxn => null()
+    type(Nuclide),     pointer :: nuc => null() ! nuclide pointer
+
+
+
+    do i=1, n_nuclides_total
+       
+       nuc => nuclides(i)
+       
+       if( nuc % max_kT > nuc % kT ) then
+          
+          ! Find lowest energy threshold of a reaction
+          low_threshold = 20.00
+          
+          do m = 1, nuc % n_reaction
+             
+             rxn => nuc % reactions(m)
+             
+             if (rxn % threshold > 1 ) then
+                E_t = nuc % energy(rxn % threshold )
+                
+                if(E_t < low_threshold ) &
+                     low_threshold = E_t                   
+             end if
+             
+          end do
+          
+          ! Find ures boundary for nuclide (if exists)
+          
+          ures_boundary=20.0;
+                    
+          if ( nuc % urr_present) then
+       
+             ures_boundary=nuc % urr_data % energy(1)
+             
+          end if
+    
+          ! According to the NJOY99 manual, the BROADR module of NJOY
+          ! Doppler broadens nuclides until one of the following conditions
+          ! is met:
+          !
+          ! - E > 1.00 MeV (this is the default value)
+          ! - E > lower energy boundary of the region of unresolved resonances
+          ! - E > lowest threshold energy for a threshold reaction
+          !
+          ! For the results to be in accordance with NJOY and to 
+          ! save some calculation work, the same conditions are adopted in TMS
+          
+          nuc % tms_emax = min(ures_boundary, min(low_threshold, 1.00))
+          
+          message="nuc: " // to_str(nuc % zaid) // &
+               " emax " // to_str(nuc % tms_emax )
+          call write_message()
+       end if
+    
+    end do
+  end subroutine tms_set_thresholds
+  
 !===============================================================================
 ! TMS_CALCULATE_MAJORANTS generates the microscopic majorant cross sections 
 ! for each nuclide. ("temperature majorant" of total cross section)
@@ -666,6 +739,16 @@ contains
              ! Current energy grid point
 
              e = nuc % energy(i);
+             
+             ! If we are above the upper limit for TMS, 
+             ! just copy cross section as-is to majorant and continue 
+             ! with the next grid point
+             
+             if ( e > nuc % tms_emax ) then
+                
+                nuc % tms_majorant(i) = nuc % total(i) 
+                cycle
+             end if
 
              !===========================================!
              ! Determine energy limits corresponding to e!
@@ -972,18 +1055,19 @@ contains
            message = "Negative temperature in TMS sampling: T = " &
                 // trim(to_str(kT/K_BOLTZMANN))
            call fatal_error()
-        else if ( kT < 0.001*K_BOLTZMANN ) then
+        else if ( kT < 0.001*K_BOLTZMANN) then
            
            ! if the temperature difference is negligible skip sampling 
            ! and use Er = E 
            
            Er = E 
-        else if ( nuc % urr_present) then
-
-           ! if the neutron is above lower boundary of ures region,
-           ! skip sampling and use Er = E (no Doppler-broadening!)           
            
-           if(E > nuc % urr_data % energy(1) ) Er = E
+        else if ( E > nuc % tms_emax ) then
+
+           ! Skip TMS if E > tms_emax. For more details, see 
+           ! tms_set_thresholds()
+
+           Er = E
            
         end if
 
@@ -1046,9 +1130,23 @@ contains
         end if
      
         !======================================================
-        ! Find cross sections corresponding to this energy
+        ! Find cross sections corresponding to Er
         !======================================================
-                
+
+        ! Check if the previous values can be used and return 
+        
+        if( Er == micro_xs(i_nuclide) % last_E) then
+
+           ! If the last collision was in a non-tms material
+           ! cdint must be updated
+
+           micro_xs(i_nuclide) % cdint = cdintegral(E, kT, nuc % awr )
+           return 
+        end if
+        
+        ! This search could be perhaps optimized, since the energy is usually
+        ! close to E (binary search might not be the optimal way)
+
         ! Find energy index on unionized grid          
         if (grid_method == GRID_UNION) call find_energy_index(Er)
         
@@ -1131,7 +1229,7 @@ contains
         
         ! This is not used in TMS transport, set to ZERO just in case
 
-        micro_xs(i_nuclide) % last_E = ZERO
+        micro_xs(i_nuclide) % last_E = Er
         
    end subroutine tms_sample_nuclide_xs
 

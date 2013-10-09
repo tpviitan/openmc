@@ -142,7 +142,8 @@ module ace_header
     ! Additional data for TMS on-the-fly temperature treatment
     real(8)              :: max_kT = -1.0  ! Maximum temperature of nuclide in MeV
     real(8), allocatable :: tms_majorant(:)    ! microscopic majorant
-    
+    real(8)              :: tms_emax   ! maximum energy for TMS treatment
+
     ! Type-Bound procedures
     contains
       procedure :: clear => nuclide_clear ! Deallocates Nuclide
