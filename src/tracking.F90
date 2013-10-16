@@ -14,8 +14,8 @@ module tracking
   use string,          only: to_str
   use tally,           only: score_analog_tally, score_tracklength_tally, &
                              score_surface_current
+  use tms
   
-
 contains
 
 !===============================================================================
@@ -84,7 +84,7 @@ contains
 
       if (mat % tmstemp < 0) then
          !=====================================================================
-         ! If TMS is not used for current material, use conventional transport
+         ! If TMS is not used for current material,use conventional ray-tracing
          !=====================================================================
 
          ! Calculate microscopic and macroscopic cross sections -- note: if the
@@ -113,7 +113,7 @@ contains
          if (p % material /= p % last_material ) call tms_update_majorants(p)
 
          ! Reset xs sums (used in the calculation of average macroscopic xss)
-
+         
          call tms_reset_xs_sums(materials(p % material))
                                            
          d_collision = ZERO;
@@ -151,7 +151,7 @@ contains
             ! The following if-block can be removed if things work OK
             ! The majorant can be occasionally exceeded without any problems, 
             ! but frequent exceeding of the majorant introduces error in the 
-            ! results 
+            ! tracking and results
 
             if ( micro_xs(i_nuclide) % cdint * micro_xs(i_nuclide) % total / &
                  micro_xs(i_nuclide) % tms_majorant > 1) then
@@ -167,20 +167,19 @@ contains
                  micro_xs(i_nuclide) % total / & 
                  micro_xs(i_nuclide) % tms_majorant ) then
 
-               ! Store i_nuclide as event nuclide
+               ! Store i_nuclide as event nuclide and exit loop
                p % event_nuclide = i_nuclide                         
-
                exit
                
             end if
                        
          end do         
 
-         ! This samples the microscopic cross sections for each of the nuclide in 
-         ! the tms material (except event_nuclide) and calculates the macroscopic
-         ! cross sections required in the scoring of tallies. 
+         ! This samples the microscopic cross sections for those nuclides
+         ! that have not yet been sampled during tracking and calculates 
+         ! the macroscopic cross sections required in the scoring of tallies. 
 
-         ! This should be the main cause for slow-down related to TMS 
+         ! This is quite slow, especially with numerous nuclides. 
 
          call calculate_xs(p)
          

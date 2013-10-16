@@ -3,7 +3,7 @@ module initialize
   use ace,              only: read_xs
   use bank_header,      only: Bank
   use constants
-  use cross_section,    only: tms_init
+  use tms,    only: tms_init
   use dict_header,      only: DictIntInt, ElemKeyValueII
   use energy_grid,      only: unionized_grid
   use error,            only: fatal_error, warning

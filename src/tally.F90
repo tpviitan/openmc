@@ -627,8 +627,6 @@ contains
               ! ================================================================
               ! DETERMINE MATERIAL CROSS SECTION
                               
-!               call tms_reduce_tally_variance(p,10)
-
               select case(score_bin)
               case (SCORE_FLUX)
                 ! For flux, we need no cross section
@@ -2097,92 +2095,5 @@ contains
     end do
 
   end subroutine setup_active_cmfdtallies
-
-!===============================
-
-!===============================
-
-  subroutine tms_reduce_tally_variance(p, n)
-    type(Particle), intent(inout) :: p
-    integer, intent(in) :: n
-    integer :: i_nuclide 
-    integer :: i    ! index over resamples   
-    integer :: m    ! index over nuclides
-    real(8) :: tot 
-    real(8) :: abs
-    real(8) :: fis
-    real(8) :: ela
-   
-    type(NuclideMicroXS) :: backup   
-    type(Material), pointer :: mat
-    type(Nuclide), pointer  :: nuc
-
-
-    mat => materials(p % material)    
-
-    if ( mat % tmstemp < ZERO ) return
-
-    ! Check that the treatment is really needed
-
-    do m = 1, mat % n_nuclides 
-       i_nuclide = mat % nuclide(m)
-       nuc => nuclides(i_nuclide)
-
-       if(nuc % zaid == 92238) nuc % tms_var_reduction = 10       
-       
-       if(nuc % tms_var_reduction == 0 .or. p % E > nuc % tms_emax) cycle
-
-       ! backupping and resoring should be only necessary for event_nuclide
-       backup = micro_xs(i_nuclide)
-
-       ! subtract originally sampled xs for nuclide
-
-       material_xs % total = material_xs % total - micro_xs(i_nuclide) % &
-            total * mat % atom_density(m) * micro_xs(i_nuclide) % cdint
-       material_xs % elastic = material_xs % elastic - micro_xs(i_nuclide) % &
-            elastic * mat % atom_density(m) * micro_xs(i_nuclide) % cdint
-       material_xs % absorption = material_xs % absorption - micro_xs(i_nuclide) % &
-            absorption * mat % atom_density(m) * micro_xs(i_nuclide) % cdint
-       material_xs % fission = material_xs % fission - micro_xs(i_nuclide) % &
-            fission * mat % atom_density(m) * micro_xs(i_nuclide) % cdint
-
-       tot=micro_xs(i_nuclide) % total
-       ela=micro_xs(i_nuclide) % elastic
-       abs=micro_xs(i_nuclide) % absorption
-       fis=micro_xs(i_nuclide) % fission
-
-       do i = 1, nuc % tms_var_reduction-1
-          call tms_sample_nuclide_xs(i_nuclide, mat % tmstemp, p % E)
-          
-          tot = tot + micro_xs(i_nuclide) % total
-          ela = ela + micro_xs(i_nuclide) % elastic
-          abs = abs + micro_xs(i_nuclide) % absorption
-          fis = fis + micro_xs(i_nuclide) % fission         
-
-       end do
-
-       tot = (tot / nuc % tms_var_reduction) * mat % atom_density(m) * &
-            micro_xs(i_nuclide) % cdint
-       ela = (ela / nuc % tms_var_reduction) * mat % atom_density(m) * &
-            micro_xs(i_nuclide) % cdint
-       abs = (abs / nuc % tms_var_reduction) * mat % atom_density(m) * &
-            micro_xs(i_nuclide) % cdint
-       fis = (fis / nuc % tms_var_reduction) * mat % atom_density(m) * &
-            micro_xs(i_nuclide) % cdint
-
-       material_xs % total = material_xs % total + tot
-       material_xs % elastic = material_xs % elastic + ela
-       material_xs % absorption = material_xs % absorption + abs
-       material_xs % fission = material_xs % fission + fis
-
-       micro_xs(i_nuclide) = backup       
-
-    end do
-
-
-  end subroutine tms_reduce_tally_variance
-
-!================================================
-
 
 end module tally

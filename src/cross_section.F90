@@ -101,12 +101,15 @@ contains
          call calculate_nuclide_xs(i_nuclide, i_sab, p % E)
       else if( mat % tmstemp >= 0.0 ) then
          
-         ! This samples target-at-rest cross sections for i_nuclide
-
          if( micro_xs(i_nuclide) % tms_n_samples > 0) then
+            ! If the nuclide already has at least one sampled cross 
+            ! section for the current track, accumulate macroscopic
+            ! cross sections according to it/them 
             call tms_accumulate_macroxs(i_nuclide, atom_density)
             cycle
          else
+            ! Sample microscopic target-at-rest cross section for i_nuclide
+            ! if not already sampled 
             call tms_sample_nuclide_xs(i_nuclide, mat % tmstemp, p % E)
          end if
          
@@ -501,463 +504,13 @@ contains
 
   end subroutine find_energy_index
 
-!===============================================================================
-! TMS_INIT makes all the initializations needed for transport with TMS 
-! (find maximum temperature for each nuclide, generate majorants)
-!===============================================================================
-
-  subroutine tms_init()
-    integer :: n       ! number of TMS materials in problem
-
-    n = tms_set_maximum_temperatures() 
-    
-    if( n == 0 ) then
-       ! if there are no TMS materials in the problem, init nothing
-       return
-    end if
-   
-! Check for ptables. TMS method is not yet able to handle URR and is 
-! incompatible with the ptable treatment. To avoid misusage of TMS, 
-! force ptables = false. 
-
-    if ( urr_ptables_on ) then
-       message="TMS cannot be used with URR ptable treatment. Please " //& 
-            "add <ptables>false</ptables> in settings.xml"
-       call fatal_error()
-    end if
-
-    call tms_set_thresholds()
-    
-! Print message (this is unimportant and can be removed )
-    
-    message="Initializing TMS for all nuclides in " // trim(to_str(n)) &
-         // " materials..." 
-    call write_message()
-
-    call tms_calculate_majorants()
-
-  end subroutine tms_init
 
 !===============================================================================
-! TMS_SET_MAXIMUM_TEMPERATURES finds the maximum temperature of each nuclide
-! for which the TMS treatment is used. Also performs some important checks.
-! Returns the number of TMS materials. 
+! TMS_UPDATE_MAJORANTS finds the nuclide-wise majorants for the current neutron
+! (L-frame) energy and calculates the macroscopic majorant for the material
 !===============================================================================
-
-  function tms_set_maximum_temperatures() result(n)
-    integer :: i           ! loop index for materials
-    integer :: u           ! loop index for nuclides 
-    integer :: n           ! number of TMS materials 
-    integer :: n_different ! number of nuclides for which 
-    integer :: nuclide_i   ! index of nuclide
-    type(Material),    pointer :: mat => null()
-
-    n = 0;
-    
-    ! loop over all materials
-    
-    do i = 1, n_materials
-
-       mat => materials(i) 
-             
-       if ( mat % tmstemp >= 0.0 ) then
-
-          n = n + 1          
-
-          ! Check at this point that no S(a,b) tables are associated with
-          ! the material. TMS is currently (and will be in the near future)
-          ! not compatible with S(a,b)
-          if ( mat % n_sab > 0) then
-             message="S(a,b) tables associated with TMS material (id = "// &
-                  trim(to_str(mat % id)) // " )"
-             call fatal_error()
-          end if          
-
-          ! loop over nuclides in material and set maximum 
-          
-          n_different = 0
-
-          do u = 1, mat % n_nuclides
-                          
-             nuclide_i = mat % nuclide(u)
-             
-             ! If material temperature is larger than max T of nuclide,
-             ! update max_kT
-             
-             if ( nuclides(nuclide_i) % max_kT < mat % tmstemp ) then
-                nuclides(nuclide_i) % max_kT = mat % tmstemp
-             end if      
-             
-             if ( mat % tmstemp - nuclides(nuclide_i) % kT & 
-                  > 0.001*K_BOLTZMANN) then
-                n_different = n_different + 1 
-             end if
-
-             
-          end do
-
-          ! if there are no nuclides in this material for which the temperature 
-          ! difference between the cross sections and tmstemp is significant, 
-          ! do not use TMS for this material at all
-
-          if(n_different == 0) then
-             
-             message="TMS treatment disabled for material " // trim( &
-                  to_str(mat % id)) // ": nuclide temperatures " &
-                  // "are already equal to tmstemp ( " // trim( &
-                  to_str(mat % tmstemp / K_BOLTZMANN)) // " K )"
-             call warning()
-
-             mat % tmstemp = -1.000
-             n = n - 1
-          end if
-
-       end if
-    end do       
-    
-  end function tms_set_maximum_temperatures
-
-!===============================================================================
-! TMS_SET_THRESHOLDS finds maximum energies for which TMS will be used 
-!===============================================================================
-
-  subroutine tms_set_thresholds()
-    integer :: i
-    integer :: m           ! loop index for reactions
-
-    real(8) :: low_threshold ! lower threshold energy 
-    real(8) :: ures_boundary ! energy of ures boundary
-    real(8) :: E_t        ! threshold energy 
-
-    type(Reaction),    pointer :: rxn => null()
-    type(Nuclide),     pointer :: nuc => null() ! nuclide pointer
-
-    integer :: q
-
-    do i=1, n_nuclides_total
-       
-       nuc => nuclides(i)
-       
-       if( nuc % max_kT > nuc % kT ) then
-          
-          ! Find lowest energy threshold of a reaction
-          low_threshold = 20.00
-          
-          do m = 1, nuc % n_reaction
-             
-             rxn => nuc % reactions(m)                                      
-             
-             if (rxn % threshold > 1 ) then
-                E_t = nuc % energy(rxn % threshold )
-                
-                if(E_t < low_threshold ) &
-                     low_threshold = E_t  
-                                
-             end if
-             
-          end do
-          
-          ! Find ures boundary for nuclide (if exists)
-          
-          ures_boundary=20.0;
-                    
-          if ( nuc % urr_present) then
-       
-             ures_boundary=nuc % urr_data % energy(1)
-             
-          end if
-    
-          ! According to the NJOY99 manual, the BROADR module of NJOY
-          ! Doppler broadens nuclides until one of the following conditions
-          ! is met:
-          !
-          ! - E > 1.00 MeV (this is the default value)
-          ! - E > lower energy boundary of the region of unresolved resonances
-          ! - E > lowest threshold energy for a threshold reaction
-          !
-          ! For the results to be in accordance with NJOY and to 
-          ! save some calculation work, the same conditions are adopted in TMS
-          
-          nuc % tms_emax = min(ures_boundary, min(low_threshold, 1.00))
-          
-          message="nuc: " // to_str(nuc % zaid) // &
-               " emax " // to_str(nuc % tms_emax )
-          call write_message()
-       end if
-    
-    end do
-  end subroutine tms_set_thresholds
-  
-!===============================================================================
-! TMS_CALCULATE_MAJORANTS generates the microscopic majorant cross sections 
-! for each nuclide. ("temperature majorant" of total cross section)
-!===============================================================================
-
-  subroutine tms_calculate_majorants()
-
-    class(Nuclide), pointer   :: nuc ! pointer to nuclide     
-    integer :: u           ! loop index for nuclides 
-    integer :: i, ii       ! loop indices over energy grid 
-    integer :: ilow, ihigh ! indices used for searching e
-    real(8) :: dT       ! delta-T, temperature diff between xs and majorant
-    real(8) :: dkT      ! delta-kT, temperature diff between xs and majorant in MeV
-    real(8) :: e        ! energy 
-    real(8) :: ar       ! awr / dkT 
-    real(8) :: df       ! factor used in determining of DBRC-style majorant 
-                        ! energy boundaries
-    real(8) :: emin, emax ! energy boundaries for majorant
-    real(8) :: max_xs   ! maximum value of cross section 
-    real(8) :: f        ! factor for cross section interpolation 
-    real(8) :: xs       ! temporary storage for cross sections
-    
-! loop over all nuclides and calculate majorant for nuclides with 
-! max_kT >= 0 (nuclides to be used with TMS)
-
-    do u = 1, n_nuclides_total
-
-       nuc => nuclides(u)
-       
-       if ( nuc % max_kT >= 0.0 ) then
-          
-          ! Calculate dT & ar
-          dkT= nuc % max_kT - nuc % kT
-          dT = (nuc % max_kT - nuc % kT) / K_BOLTZMANN    
-          ar = nuc % awr / dkT;
-          
-          ! Write message 
-          message = "Generating TMS majorant for nuclide " // & 
-               trim(nuc % name) // ". Delta-T = " // trim( to_str(dT) ) &
-               // " K."   
-          call write_message()
-          
-          ! Allocate memory for majorant cross section 
-          
-          allocate(nuc % tms_majorant(nuc % n_grid))
-
-          ! initial guesses for the lower and upper boundary
-
-          ilow = 1
-          ihigh = 1
-
-          ! loop over energy grid
-
-          do i=1, nuc % n_grid
-            
-             ! Current energy grid point
-
-             e = nuc % energy(i);
-             
-             ! If we are above the upper limit for TMS, 
-             ! just copy cross section as-is to majorant and continue 
-             ! with the next grid point
-             
-             if ( e > nuc % tms_emax ) then
-                
-                nuc % tms_majorant(i) = nuc % total(i) 
-                cycle
-             end if
-
-             !===========================================!
-             ! Determine energy limits corresponding to e!
-             !===========================================!
-
-             ! This is done the old "DBRC" way (Becker, Dagan, Rothenstein)
-             ! More efficient ways exist but remain to be published
-
-             df = 4.0/sqrt(ar*e);
-             
-             ! If the neutron energy is small enough compared to the energy of 
-             ! the target, the relative collision energ can be arbitrarily small
-             ! --> Let's approximate 0.0 eV with the lowest grid point
-             if ( e < 16.0 / ar) then
-                emin = nuc % energy(1)            
-             else
-                ! otherwise, calculate the minimum boundary energy normally
-                ! min energy corresponds to a parallel collision with mu = 1
-                emin = e*(1 - df)*(1 - df)
-             end if
-              
-             ! Calculate maximum energy 
-             ! max energy corresponds to a head-on collision with mu = -1
-             
-             emax = e*(1 + df)*(1 + df);
-
-             ! A few sanity checks
-             
-             ! This should never happen
-             if ( emin < nuc % energy(1) ) then
-                emin = nuc % energy(1)
-             end if
-
-             ! This happens.
-             if ( emax > nuc % energy(nuc % n_grid) ) then
-                emax = nuc % energy(nuc  % n_grid)
-             end if
-
-             !====================================================!
-             ! Find max total xs between the limits emin and emax !
-             !====================================================!
-             
-             ! First find energy grid indices for the lowest and 
-             ! highest point that are within the boundaries
-
-             ! As the boundaries are changing monotonously, the boundaries
-             ! of the previous point act as a good first guess 
-
-             do while ( nuc % energy(ilow) < emin )
-                ilow = ilow + 1                
-             end do
-             
-             if (ihigh < ilow) then
-                ihigh = ilow
-             end if
-             
-             do while ( ihigh + 1 < nuc % n_grid ) 
-                
-                if( nuc % energy(ihigh + 1) >= emax ) exit
-                                
-                ihigh = ihigh + 1  
-                
-             end do
-
-             ! look for maximum between ilow and ihigh
-             
-             max_xs = nuc % total(ilow);
-            
-             do ii = ilow + 1, ihigh 
-                
-                if ( nuc % total(ii) > max_xs ) then
-                   max_xs = nuc % total(ii)
-                end if
-                
-             end do
-
-             ! interpolate extremes and check 
-
-             ! low:
-             if( ilow == 1 ) then
-                xs = nuc % total(1)
-             else
-                f = (emin - nuc % energy(ilow-1))/( nuc % energy(ilow) - nuc % energy(ilow-1))
-                xs = nuc % total(ilow-1) + f * (nuc % total(ilow) - nuc % total(ilow-1))
-             end if
-             
-             if( xs > max_xs) max_xs = xs
-
-             ! high:
-
-             if( ihigh >= nuc % n_grid ) then
-                xs = nuc % total(nuc % n_grid)
-             else
-                f = (emax - nuc % energy(ihigh))/( nuc % energy(ihigh + 1) &
-                  - nuc % energy(ihigh))
-                xs = nuc % total(ihigh) + f * (nuc % total(ihigh+1) - nuc % total(ihigh))
-             end if
-
-             if ( xs > max_xs) max_xs = xs
-             
-             ! Multiply by D-b integral for constant cross section and store 
-             
-             nuc % tms_majorant(i) = max_xs * cdintegral(e, dkT, nuc % awr)
-                          
-          end do
-
-       end if
-
-    end do
-    
-  end subroutine tms_calculate_majorants
-
-!===============================================================================
-! CDINTEGRAL calculates the Doppler-broadening integral for constant cross 
-! section. In the TMS articles [1-x], this is denoted with g(E,T,A), also 
-! sometimes referred to as the "normalization factor"
-!===============================================================================
-
-
-      function cdintegral(E,dkT,awr) result(cdint) 
-        real(8), intent(in)      :: E    ! Neutron energy (always L-frame)
-        real(8), intent(in)      :: dkT  ! Delta kT (MeV)
-        real(8), intent(in)      :: awr  ! Atomic Weight Ratio (AWR)
-        
-        real(8) :: a, ainv, cdint;
-        
-! In case of insignificant temperature change, just return 1 
-! (this avoids division-by-zero problems). This should happen only
-! if a material with TMS has nuclides with cross sections both at 
-! tmstemp and at a temperature T < tmstemp
-
-        if( dkT < 0.001*K_BOLTZMANN) then
-           cdint = ONE 
-           return
-        end if
-         
-        a = sqrt(awr*E/(dkT));
-
-        ! With higher values of a the routine can be somewhat optimized
-
-        if(a > 250) then
-           cdint=ONE
-        else if ( a > 2.568 ) then
-           ainv = 1/a
-           cdint=ONE + 0.5*ainv*ainv
-        else
-           ainv = 1/a
-           cdint=(ONE + 0.5*ainv*ainv)*erf(a) + exp(-a*a)*ainv/SQRTPI
-        end if
-
-      end function cdintegral
-          
-!===============================================================================
-! TMS_SAMPLE_NUCLIDE samples the target nuclide candidate based on majorant 
-! cross sections
-!===============================================================================
-  
-      function tms_sample_nuclide(p) result(i_nuclide)
-
-        type(Particle), intent(in) :: p ! particle pointer 
-
-        type(Material), pointer :: mat ! material pointer 
-        integer :: i       ! loop variable over nuclides in material
-        integer :: i_nuclide  ! nuclide index
-        real(8) :: xs_nuc  ! aux varaible used in TMS nuclide sampling
-        real(8) :: E       ! energy
-
-        ! set energy and material pointer 
-        E = p % E        
-        mat => materials(p % material)
-
-        ! Sample proportion of macroscopic xs
-
-        xs_nuc = material_xs % tms_majorant * prn()                                  
-        
-        ! arranging the nuclide array properly (most probable nuclide
-        ! first) would increase significantly the performance in 
-        ! case of burned materials 
-
-        do i = 1, mat % n_nuclides
-           
-           i_nuclide = mat % nuclide(i) 
-                   
-           xs_nuc = xs_nuc - mat % atom_density(i) * & 
-                micro_xs(i_nuclide) % tms_majorant
-           
-           if(xs_nuc < 0.0) exit
-
-        end do
-
-        if( xs_nuc > 0.0 ) then
-           message = "TMS nuclide sampling failed" 
-           call fatal_error()
-        end if
-                
-      end function tms_sample_nuclide
-    
-   !======================================================================
-
-   !======================================================================
-
-   subroutine tms_update_majorants(p)   
+                       
+subroutine tms_update_majorants(p)   
      
      type(Particle), intent(inout) :: p ! Particle pointer 
 
@@ -1002,7 +555,9 @@ contains
            end if
            
         end select
-        
+
+        ! take maximum of the adjascent points (no interpolation here)
+
         micro_xs(i_nuclide) % tms_majorant = &
              max(nuc % tms_majorant(i_grid), nuc % tms_majorant(i_grid + 1))
         
@@ -1015,7 +570,8 @@ contains
 
 
 !===============================================================================
-! TMS_SAMPLE_NUCLIDE_XS 
+! TMS_SAMPLE_NUCLIDE_XS samples a velocity for nuclide i_nuclide and stores
+! cross sections corresponding to the target-at-rest velocity in micro_xs
 !===============================================================================
 
       ! S(a,b) -materiaalitarkistus pitaa saada jonnekin!
@@ -1134,8 +690,8 @@ contains
               if (prn() < accept_prob) exit
            end do
            
-           ! Store "relative energy" = neutron energy corresponding 
-           ! to rel. velocity
+           ! Calculate "relative energy" = neutron energy corresponding 
+           ! to rel. velocity = target-at-rest energy
            Er = beta_vr_sq * kT / nuc % awr 
            
         end if
@@ -1148,15 +704,15 @@ contains
         
         if( Er == micro_xs(i_nuclide) % last_E) then
 
-           ! If the last collision was in a non-tms material
+           ! If the last collision was in a non-tms material,
            ! cdint must be updated
 
            micro_xs(i_nuclide) % cdint = cdintegral(E, kT, nuc % awr )
            return 
         end if
         
-        ! This search could be perhaps optimized, since the energy is usually
-        ! close to E (binary search might not be the optimal way)
+        ! NOTE: This search could probably be optimized, since the energy is 
+        ! usually close to E (binary search might not be the optimal way)
 
         ! Find energy index on unionized grid          
         if (grid_method == GRID_UNION) call find_energy_index(Er)
@@ -1192,7 +748,7 @@ contains
         micro_xs(i_nuclide) % cdint = cdintegral(E, kT, nuc % awr )
 
         !==========================================================================
-        ! do the same things as in calculate_nuclide_xs minus URR and S(a,b) 
+        ! do the same things as in calculate_nuclide_xs excluding URR and S(a,b) 
         ! related stuff (neither works with TMS)
         !==========================================================================
         
@@ -1238,72 +794,77 @@ contains
                 micro_xs(i_nuclide) % fission
         end if
                 
+        ! Store previous relative energy. The xs lookup can be skipped 
+        ! in case there is no need to sample the target velocity, i.e. 
+        ! above tms_emax 
 
         micro_xs(i_nuclide) % last_E = Er
         
    end subroutine tms_sample_nuclide_xs
 
-!====================
+!===============================================================================
+! CDINTEGRAL calculates the Doppler-broadening integral for constant cross 
+! section. In the TMS articles [1-x], this is denoted with g(E,T,A), also 
+! sometimes called the "normalization factor"
+!===============================================================================
 
-subroutine tms_reset_xs_sums(mat)
-  type(Material),intent(in) :: mat 
-  
-  integer :: n
-  integer :: i_nuclide
-  type(Nuclide), pointer:: nuc ! nuclide pointer 
 
-  do n=1,mat % n_nuclides 
-     i_nuclide = mat % nuclide(n) 
+      function cdintegral(E,dkT,awr) result(cdint) 
+        real(8), intent(in)      :: E    ! Neutron energy (always L-frame)
+        real(8), intent(in)      :: dkT  ! Delta kT (MeV)
+        real(8), intent(in)      :: awr  ! Atomic Weight Ratio (AWR)
+        
+        real(8) :: a, ainv, cdint;
+        
+        ! In case of insignificant temperature change, just return 1 
+        ! (this avoids division-by-zero problems). This should happen only
+        ! if a material with TMS has nuclides with cross sections both at 
+        ! tmstemp and at a temperature T < tmstemp
 
-     micro_xs(i_nuclide) % sum_total = ZERO
-     micro_xs(i_nuclide) % sum_elastic = ZERO
-     micro_xs(i_nuclide) % sum_absorption = ZERO
-     micro_xs(i_nuclide) % sum_fission = ZERO
-     micro_xs(i_nuclide) % sum_nu_fission = ZERO
-     micro_xs(i_nuclide) % sum_kappa_fission = ZERO
+        if( dkT < 0.001*K_BOLTZMANN) then
+           cdint = ONE 
+           return
+        end if
+         
+        a = sqrt(awr*E/(dkT));
 
-     micro_xs(i_nuclide) % tms_n_samples = 0
+        ! This is the same "light" optimization as in Serpent. 
+        ! It might be possible to speed up the calculation further, 
+        ! but it should be noted that cdint must be calculated 
+        ! quite accurately to get correct results
 
-  end do
+        if(a > 250) then
+           cdint=ONE
+        else if ( a > 2.568 ) then
+           ainv = 1/a
+           cdint=ONE + 0.5*ainv*ainv
+        else
+           ! with small values of a, cdint is calculated the hard way
+           ainv = 1/a
+           cdint=(ONE + 0.5*ainv*ainv)*erf(a) + exp(-a*a)*ainv/SQRTPI
+        end if
 
-end subroutine tms_reset_xs_sums
-
-! ==============================================
-
-! ==============================================
-
-subroutine tms_accumulate_xs_sums(i_nuclide)
-  integer, intent(in) :: i_nuclide ! nuclide identifier 
-  
-  ! add to sums
-
-  micro_xs(i_nuclide) % sum_total = micro_xs(i_nuclide) % sum_total + &
-       micro_xs(i_nuclide) % total
-  micro_xs(i_nuclide) % sum_elastic = micro_xs(i_nuclide) % sum_elastic + &
-       micro_xs(i_nuclide) % elastic
-  micro_xs(i_nuclide) % sum_absorption = micro_xs(i_nuclide) % sum_absorption +&
-       micro_xs(i_nuclide) % absorption
-  micro_xs(i_nuclide) % sum_fission = micro_xs(i_nuclide) % sum_fission + &
-       micro_xs(i_nuclide) % fission
-  micro_xs(i_nuclide) % sum_nu_fission = micro_xs(i_nuclide) % sum_nu_fission + &
-       micro_xs(i_nuclide) % nu_fission
-  micro_xs(i_nuclide) % sum_kappa_fission = micro_xs(i_nuclide) % &
-       sum_kappa_fission +  micro_xs(i_nuclide) % kappa_fission
-  
-  ! increase counter
-  micro_xs(i_nuclide) % tms_n_samples = micro_xs(i_nuclide) % tms_n_samples + 1 
-
-end subroutine tms_accumulate_xs_sums
+      end function cdintegral
+      
+!=============================================================================
+! TMS_ACCUMULATE_MACROXS increases macroscopic cross sections by the 
+! average of the previuosly-sampled cross sections for i_nuclide 
+!=============================================================================
 
 subroutine tms_accumulate_macroxs(i_nuclide, atom_density)
-  integer, intent(in) :: i_nuclide
-  real(8), intent(in) :: atom_density
+  integer, intent(in) :: i_nuclide    ! nuclide index
+  real(8), intent(in) :: atom_density 
 
-  real(8)  :: mult 
+  real(8)  :: mult                    ! multiplier for microscopic xs 
+
+  ! calculate multiplier for xs. cdint must be used in all cross sections
+  ! used in tally scoring 
 
   mult = atom_density * micro_xs(i_nuclide) % cdint /  &
        micro_xs(i_nuclide) % tms_n_samples
 
+  ! accumulate macroscopic cross sections of current material 
+  
   material_xs % total = material_xs % total + mult *  &
        micro_xs(i_nuclide) % sum_total
 
@@ -1323,5 +884,7 @@ subroutine tms_accumulate_macroxs(i_nuclide, atom_density)
          micro_xs(i_nuclide) % sum_kappa_fission    
 
 end subroutine tms_accumulate_macroxs
+      
+
 
 end module cross_section

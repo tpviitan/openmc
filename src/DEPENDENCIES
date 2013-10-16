@@ -188,7 +188,6 @@ hdf5_summary.o: tally_header.o
 initialize.o: ace.o
 initialize.o: bank_header.o
 initialize.o: constants.o
-initialize.o: cross_section.o
 initialize.o: dict_header.o
 initialize.o: energy_grid.o
 initialize.o: error.o
@@ -206,6 +205,7 @@ initialize.o: state_point.o
 initialize.o: string.o
 initialize.o: tally_header.o
 initialize.o: tally_initialize.o
+initialize.o: tms.o
 
 input_xml.o: cmfd_input.o
 input_xml.o: constants.o
@@ -353,6 +353,7 @@ string.o: global.o
 
 tally.o: ace_header.o
 tally.o: constants.o
+tally.o: cross_section.o
 tally.o: error.o
 tally.o: global.o
 tally.o: math.o
@@ -372,6 +373,10 @@ tally_initialize.o: tally_header.o
 
 timer_header.o: constants.o
 
+tms.o: cross_section.o
+tms.o: error.o
+tms.o: global.o
+
 tracking.o: cross_section.o
 tracking.o: error.o
 tracking.o: geometry.o
@@ -383,6 +388,7 @@ tracking.o: physics.o
 tracking.o: random_lcg.o
 tracking.o: string.o
 tracking.o: tally.o
+tracking.o: tms.o
 
 xml_interface.o: constants.o
 xml_interface.o: error.o
