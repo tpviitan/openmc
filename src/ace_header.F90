@@ -143,6 +143,7 @@ module ace_header
     real(8)              :: max_kT = -1.0  ! Maximum temperature of nuclide in MeV
     real(8), allocatable :: tms_majorant(:)    ! microscopic majorant
     real(8)              :: tms_emax   ! maximum energy for TMS treatment
+    integer              :: tms_var_reduction = 0 ! number of resamples for this nuclide
 
     ! Type-Bound procedures
     contains
@@ -222,7 +223,14 @@ module ace_header
     ! For TMS
     real(8) :: tms_majorant    ! microscopic TMS majorant at the current E
     real(8) :: cdint = 1.000   ! 
-
+    real(8) :: tms_n_samples   ! number of samples for current track
+    real(8) :: sum_total       ! sum of total xs samples for current track
+    real(8) :: sum_elastic     ! sum of elastic xs samples for current track
+    real(8) :: sum_absorption  ! 
+    real(8) :: sum_fission     ! 
+    real(8) :: sum_nu_fission  ! 
+    real(8) :: sum_kappa_fission  ! 
+    
     ! Information for S(a,b) use
     integer :: index_sab   ! index in sab_tables (zero means no table)
     real(8) :: elastic_sab ! microscopic elastic scattering on S(a,b) table

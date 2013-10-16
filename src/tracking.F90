@@ -80,7 +80,7 @@ contains
       ! Find the distance to the nearest boundary
       call distance_to_boundary(p, d_boundary, surface_crossed, lattice_crossed)
 
-      mat => materials(p % material)
+      mat => materials(p % material)      
 
       if (mat % tmstemp < 0) then
          !=====================================================================
@@ -111,18 +111,20 @@ contains
          ! only once per material and energy)
 
          if (p % material /= p % last_material ) call tms_update_majorants(p)
-        
-         ! However, the macroscopic and microscopic material majorants are
-         ! sampled separately for each track
 
-         call calculate_xs(p)
-                  
+         ! Reset xs sums (used in the calculation of average macroscopic xss)
+
+         call tms_reset_xs_sums(materials(p % material))
+                                           
          d_collision = ZERO;
                      
          ! advance neutron in small steps until a collision occurs
          ! or the neutron hits a boundary.
          do i_tms_event = 1, MAX_EVENTS 
 
+            ! reset event_nuclide
+            p % event_nuclide = -1
+                        
             if(material_xs % tms_majorant == ZERO) then
                d_collision=INFINITY
             else
@@ -133,21 +135,19 @@ contains
             
             ! if the neutron went beyond the boundary, exit loop 
             if( d_collision > d_boundary) exit
-
+            
             ! Sample target nuclide candidate based on majorants 
             ! returns index of the sampled nuclide     
             
             i_nuclide = tms_sample_nuclide(p)
             
-            ! Store as event nuclide
-            p % event_nuclide = i_nuclide                         
-
-            ! Resample velocity for current target.
-            ! On first round the previously sampled value (at calculate_xs) 
-            ! can be used 
-            if( i_tms_event > 1 ) call tms_sample_nuclide_xs(i_nuclide, &
-                 mat % tmstemp, p % E)
+            ! Sample velocity for current target.
+            call tms_sample_nuclide_xs(i_nuclide, mat % tmstemp, p % E)   
             
+            ! accumulate xs sums
+            
+            call tms_accumulate_xs_sums(i_nuclide)
+
             ! The following if-block can be removed if things work OK
             ! The majorant can be occasionally exceeded without any problems, 
             ! but frequent exceeding of the majorant introduces error in the 
@@ -165,9 +165,25 @@ contains
 
             if( prn() < micro_xs(i_nuclide) % cdint * &
                  micro_xs(i_nuclide) % total / & 
-                 micro_xs(i_nuclide) % tms_majorant ) exit
+                 micro_xs(i_nuclide) % tms_majorant ) then
+
+               ! Store i_nuclide as event nuclide
+               p % event_nuclide = i_nuclide                         
+
+               exit
+               
+            end if
                        
-         end do 
+         end do         
+
+         ! This samples the microscopic cross sections for each of the nuclide in 
+         ! the tms material (except event_nuclide) and calculates the macroscopic
+         ! cross sections required in the scoring of tallies. 
+
+         ! This should be the main cause for slow-down related to TMS 
+
+         call calculate_xs(p)
+         
       end if
 
       ! Select smaller of the two distances

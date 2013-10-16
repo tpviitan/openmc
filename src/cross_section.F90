@@ -100,9 +100,15 @@ contains
            mat % tmstemp < 0.0 ) then
          call calculate_nuclide_xs(i_nuclide, i_sab, p % E)
       else if( mat % tmstemp >= 0.0 ) then
-
+         
          ! This samples target-at-rest cross sections for i_nuclide
-         call tms_sample_nuclide_xs(i_nuclide, mat % tmstemp, p % E)
+
+         if( micro_xs(i_nuclide) % tms_n_samples > 0) then
+            call tms_accumulate_macroxs(i_nuclide, atom_density)
+            cycle
+         else
+            call tms_sample_nuclide_xs(i_nuclide, mat % tmstemp, p % E)
+         end if
          
          ! The material macroscopic cross sections, used in scoring
          ! of keff and reaction rates, need to be multiplied by cdint
@@ -368,7 +374,7 @@ contains
     type(Nuclide),  pointer, save :: nuc => null()
     type(Reaction), pointer, save :: rxn => null()
 !$omp threadprivate(urr, nuc, rxn)
-
+    
     micro_xs(i_nuclide) % use_ptable = .true.
 
     ! get pointer to probability table
@@ -626,7 +632,7 @@ contains
     type(Reaction),    pointer :: rxn => null()
     type(Nuclide),     pointer :: nuc => null() ! nuclide pointer
 
-
+    integer :: q
 
     do i=1, n_nuclides_total
        
@@ -639,13 +645,14 @@ contains
           
           do m = 1, nuc % n_reaction
              
-             rxn => nuc % reactions(m)
+             rxn => nuc % reactions(m)                                      
              
              if (rxn % threshold > 1 ) then
                 E_t = nuc % energy(rxn % threshold )
                 
                 if(E_t < low_threshold ) &
-                     low_threshold = E_t                   
+                     low_threshold = E_t  
+                                
              end if
              
           end do
@@ -888,6 +895,7 @@ contains
         a = sqrt(awr*E/(dkT));
 
         ! With higher values of a the routine can be somewhat optimized
+
         if(a > 250) then
            cdint=ONE
         else if ( a > 2.568 ) then
@@ -1031,12 +1039,14 @@ contains
         real(8) :: r1, r2 
         real(8) :: f ! xs interpolation factor        
         real(8) :: kT      ! temperature difference in MeV
-     
+        real(8) :: rnd1, rnd2 
+        real(8) :: s        
+
         ! set nuclide pointer 
 
         nuc => nuclides(i_nuclide) 
         
-        ! amount of thermal motion to be "added" is the differenct between
+        ! amount of thermal motion to be "added" is the difference between
         ! the material temperature and the nuclide (xs) temperature 
         
         kT = kT_mat - nuc % kT 
@@ -1106,6 +1116,7 @@ contains
                  
                  c = cos(PI/TWO * prn())
                  beta_vt_sq = -log(r1) - log(r2)*c*c
+                                 
               end if
               
               ! Determine beta * vt
@@ -1226,11 +1237,91 @@ contains
                 nuc % reactions(nuc % index_fission(1)) % Q_value * &
                 micro_xs(i_nuclide) % fission
         end if
-        
-        ! This is not used in TMS transport, set to ZERO just in case
+                
 
         micro_xs(i_nuclide) % last_E = Er
         
    end subroutine tms_sample_nuclide_xs
+
+!====================
+
+subroutine tms_reset_xs_sums(mat)
+  type(Material),intent(in) :: mat 
+  
+  integer :: n
+  integer :: i_nuclide
+  type(Nuclide), pointer:: nuc ! nuclide pointer 
+
+  do n=1,mat % n_nuclides 
+     i_nuclide = mat % nuclide(n) 
+
+     micro_xs(i_nuclide) % sum_total = ZERO
+     micro_xs(i_nuclide) % sum_elastic = ZERO
+     micro_xs(i_nuclide) % sum_absorption = ZERO
+     micro_xs(i_nuclide) % sum_fission = ZERO
+     micro_xs(i_nuclide) % sum_nu_fission = ZERO
+     micro_xs(i_nuclide) % sum_kappa_fission = ZERO
+
+     micro_xs(i_nuclide) % tms_n_samples = 0
+
+  end do
+
+end subroutine tms_reset_xs_sums
+
+! ==============================================
+
+! ==============================================
+
+subroutine tms_accumulate_xs_sums(i_nuclide)
+  integer, intent(in) :: i_nuclide ! nuclide identifier 
+  
+  ! add to sums
+
+  micro_xs(i_nuclide) % sum_total = micro_xs(i_nuclide) % sum_total + &
+       micro_xs(i_nuclide) % total
+  micro_xs(i_nuclide) % sum_elastic = micro_xs(i_nuclide) % sum_elastic + &
+       micro_xs(i_nuclide) % elastic
+  micro_xs(i_nuclide) % sum_absorption = micro_xs(i_nuclide) % sum_absorption +&
+       micro_xs(i_nuclide) % absorption
+  micro_xs(i_nuclide) % sum_fission = micro_xs(i_nuclide) % sum_fission + &
+       micro_xs(i_nuclide) % fission
+  micro_xs(i_nuclide) % sum_nu_fission = micro_xs(i_nuclide) % sum_nu_fission + &
+       micro_xs(i_nuclide) % nu_fission
+  micro_xs(i_nuclide) % sum_kappa_fission = micro_xs(i_nuclide) % &
+       sum_kappa_fission +  micro_xs(i_nuclide) % kappa_fission
+  
+  ! increase counter
+  micro_xs(i_nuclide) % tms_n_samples = micro_xs(i_nuclide) % tms_n_samples + 1 
+
+end subroutine tms_accumulate_xs_sums
+
+subroutine tms_accumulate_macroxs(i_nuclide, atom_density)
+  integer, intent(in) :: i_nuclide
+  real(8), intent(in) :: atom_density
+
+  real(8)  :: mult 
+
+  mult = atom_density * micro_xs(i_nuclide) % cdint /  &
+       micro_xs(i_nuclide) % tms_n_samples
+
+  material_xs % total = material_xs % total + mult *  &
+       micro_xs(i_nuclide) % sum_total
+
+  material_xs % elastic = material_xs % elastic + mult *  &
+       micro_xs(i_nuclide) % sum_elastic
+
+  material_xs % absorption = material_xs % absorption + mult *  &
+       micro_xs(i_nuclide) % sum_absorption
+
+  material_xs % fission = material_xs % fission + mult *  &
+       micro_xs(i_nuclide) % sum_fission
+    
+  material_xs % nu_fission = material_xs % nu_fission + mult *  &
+         micro_xs(i_nuclide) % sum_nu_fission
+
+  material_xs % kappa_fission = material_xs % kappa_fission + mult *  &
+         micro_xs(i_nuclide) % sum_kappa_fission    
+
+end subroutine tms_accumulate_macroxs
 
 end module cross_section

@@ -1289,7 +1289,7 @@ contains
          call material_dict % add_key(mat % id, i)
          cycle
       end if
-
+      
       ! Read tmstemp if available 
       if (check_for_node(node_mat, "tmstemp")) then
         call get_node_value(node_mat, "tmstemp", tms)
